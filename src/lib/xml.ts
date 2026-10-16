@@ -1,0 +1,26 @@
+import type { Change } from "./types";
+
+const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+const escAttr = (s: string) => esc(s).replace(/"/g, "&quot;");
+
+function stamp(d: Date) {
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+/** Same layout as the NetAct Plan Editor export (CRLF after the XML declaration and at the end). */
+export function writeRaml(changes: Change[], name: string, now = new Date()): string {
+  const parts: string[] = [
+    '<?xml version="1.0"?>\r\n<raml xmlns="raml21.xsd" version="2.1">',
+    `<cmData xmlns="" type="plan" scope="changes" name="${escAttr(name)}">`,
+    `<header><log user="unknown" action="created" dateTime="${stamp(now)}" appInfo="Nokia NetAct Plan Editor">No description</log></header>`,
+  ];
+  for (const c of changes) {
+    const ps = c.params.map((p) => `<p name="${escAttr(p.name)}">${esc(p.new)}</p>`).join("");
+    parts.push(
+      `<managedObject class="${c.cls}" operation="update" version="${escAttr(c.version)}" distName="${escAttr(c.distName)}">${ps}</managedObject>`,
+    );
+  }
+  parts.push("</cmData></raml>\r\n");
+  return parts.join("");
+}

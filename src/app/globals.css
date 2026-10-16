@@ -1,0 +1,171 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply min-h-screen bg-slate-50 font-sans text-slate-900 antialiased transition-colors duration-300;
+  }
+
+  .dark body {
+    @apply bg-[#070a13] text-slate-100;
+  }
+
+  h1,
+  h2,
+  h3 {
+    font-family: "Space Grotesk", var(--font-sans);
+  }
+
+  ::selection {
+    @apply bg-brand-500/30;
+  }
+}
+
+@layer components {
+  /* Aurora backdrop for both themes (uupm.cc-inspired glow) */
+  .aurora-bg {
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    overflow: hidden;
+    pointer-events: none;
+  }
+
+  .aurora-blob {
+    position: absolute;
+    border-radius: 9999px;
+    filter: blur(90px);
+    opacity: 0.5;
+    animation: aurora 14s ease-in-out infinite;
+  }
+
+  .dark .aurora-blob {
+    opacity: 0.35;
+  }
+
+  .surface {
+    @apply rounded-2xl border border-slate-200/80 bg-white/80 backdrop-blur-xl transition-colors duration-300;
+  }
+
+  .dark .surface {
+    @apply border-white/10 bg-white/[0.04];
+  }
+
+  .field {
+    @apply w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-slate-900 placeholder:text-slate-400 transition focus:border-brand-500 focus:outline-none focus:ring-4 focus:ring-brand-500/15;
+  }
+
+  .dark .field {
+    @apply border-white/10 bg-white/5 text-slate-100 placeholder:text-slate-500 focus:border-brand-400 focus:ring-brand-400/20;
+  }
+
+  .field-inline {
+    @apply w-full min-w-[7rem] max-w-[16rem] rounded-lg border border-slate-300 bg-white px-2 py-1 text-right text-sm font-semibold tabular-nums text-brand-600 transition focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20;
+  }
+
+  .dark .field-inline {
+    @apply border-white/10 bg-white/5 text-brand-400 focus:border-brand-400 focus:ring-brand-400/25;
+  }
+
+  .segmented {
+    @apply inline-flex items-center gap-0.5 rounded-full border border-slate-200 bg-slate-100/80 p-1 text-xs font-medium;
+  }
+
+  .dark .segmented {
+    @apply border-white/10 bg-white/5;
+  }
+
+  .seg-btn {
+    @apply rounded-full px-3 py-1.5 text-slate-500 transition hover:text-slate-800;
+  }
+
+  .dark .seg-btn {
+    @apply text-slate-400 hover:text-slate-100;
+  }
+
+  .seg-btn-active {
+    @apply bg-white text-slate-900 shadow-sm ring-1 ring-black/5;
+  }
+
+  .dark .seg-btn-active {
+    @apply bg-white/10 text-white ring-white/10;
+  }
+
+  .chip {
+    @apply cursor-pointer select-none rounded-full border px-3 py-1 text-sm transition;
+  }
+
+  .chip-off {
+    @apply border-slate-200 bg-white text-slate-600 hover:border-brand-300 hover:text-brand-600;
+  }
+
+  .dark .chip-off {
+    @apply border-white/10 bg-white/5 text-slate-300 hover:border-brand-400/60 hover:text-brand-300;
+  }
+
+  .chip-on {
+    @apply border-transparent bg-gradient-to-r from-brand-600 to-brand-500 text-white shadow-lg shadow-brand-500/25;
+  }
+
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-brand-600 to-brand-500 px-5 py-2.5 text-sm font-semibold text-white shadow-lg shadow-brand-500/25 transition hover:from-brand-500 hover:to-brand-400 hover:shadow-brand-500/40 focus:outline-none focus:ring-4 focus:ring-brand-500/25 disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none;
+  }
+
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 transition hover:bg-slate-50 hover:text-slate-900 focus:outline-none focus:ring-4 focus:ring-slate-500/10 disabled:cursor-not-allowed disabled:opacity-40;
+  }
+
+  .dark .btn-ghost {
+    @apply border-white/10 bg-white/5 text-slate-200 hover:bg-white/10 hover:text-white;
+  }
+}
+
+@layer utilities {
+  .text-gradient {
+    @apply bg-gradient-to-r from-brand-500 via-violet-500 to-fuchsia-500 bg-clip-text text-transparent;
+  }
+}
+
+/* Scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(100, 116, 139, 0.4) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background-color: rgba(100, 116, 139, 0.35);
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(100, 116, 139, 0.6);
+  background-clip: content-box;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .aurora-blob,
+  .animate-fade-up {
+    animation: none !important;
+  }
+}
