@@ -54,7 +54,7 @@ function assert(condition: boolean, label: string, detail = "") {
   const expXml = fs.readFileSync(expPath, "utf8");
 
   const parsed = await readInput("700.csv", csvBuf);
-  const { header, rows } = canonicalize(parsed.header, parsed.rows, ["mrbtsId", "lnBtsId", "lnCelId", ...PARAM_NAMES]);
+  const { header, rows } = canonicalize(parsed.header, parsed.rows, ["mrbtsId", "lnBtsId", "lnCelId", "lnRelId", ...PARAM_NAMES]);
   const params = ["angle", "dlRsBoost"];
   const wanted = wantedDistNames(rows, params);
 

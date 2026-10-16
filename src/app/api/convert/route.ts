@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { DEFAULT_PARAM_NAMES, PARAMS, PARAM_NAMES, type ParamDef } from "@/lib/config";
+import { ALL_PARAM_NAMES, defaultParamNamesFor, paramsFor, type ParamDef, type Tech } from "@/lib/config";
 import { buildChanges, wantedDistNames } from "@/lib/diff";
 import { loadDb, type DbObject } from "@/lib/db";
 import { fetchDb } from "@/lib/fetchDb";
@@ -11,6 +11,9 @@ export const runtime = "nodejs";
 export const maxDuration = 300;
 
 const fail = (error: string, status = 400) => NextResponse.json({ error }, { status });
+
+/** Identity columns, never treated as parameters. */
+const ID_COLUMNS = ["mrbtsId", "lnBtsId", "lnCelId", "lnRelId", "nrBtsId", "nrCellId"];
 
 async function toBuffer(f: File) {
   return Buffer.from(await f.arrayBuffer());
@@ -50,34 +53,42 @@ export async function POST(req: Request) {
       }
     }
 
-    const activeParamDefs = { ...PARAMS, ...customMappings };
+    const rawName = String(form.get("name") ?? "").trim();
+    const name = rawName || "changes"; // plan name inside the XML, exactly as typed
+    const fileBase = name.replace(/[^\w.-]+/g, "_");
+
+    // 1. read the CSV / Excel (recognising both LTE and NR column names)
+    const parsed = await readInput(input.name, await toBuffer(input));
+    const { header, rows } = canonicalize(parsed.header, parsed.rows, [...ID_COLUMNS, ...ALL_PARAM_NAMES]);
+    for (const col of ["mrbtsId"]) {
+      if (!header.includes(col)) return fail(`Column "${col}" was not found in the input file.`);
+    }
+    // Require at least one of the cell identity columns (lnCelId or nrCellId)
+    if (!header.includes("lnCelId") && !header.includes("nrCellId")) {
+      return fail(`Column "lnCelId" or "nrCellId" was not found in the input file.`);
+    }
+
+    // The technology decides which parameter -> class map applies (a few names, e.g. "angle",
+    // exist in both LTE and NR but target different managed objects).
+    const tech: Tech = header.includes("nrCellId") ? "NR" : "LTE";
+    const activeParamDefs: Record<string, ParamDef> = { ...paramsFor(tech), ...customMappings };
     const allKnownParamNames = Object.keys(activeParamDefs);
+
+    // Fallback: an unrecognised header column is mapped to this technology's base cell class.
+    for (const col of header) {
+      if (!ID_COLUMNS.includes(col) && !activeParamDefs[col]) {
+        activeParamDefs[col] =
+          tech === "NR"
+            ? { cls: "com.nokia.srbts.nrbts:NRCELL", suffix: "", defaultOn: false, tech: "NR" }
+            : { cls: "NOKLTE:LNCEL", suffix: "", defaultOn: false, tech: "LTE" };
+      }
+    }
 
     const requested = form
       .getAll("params")
       .map(String)
       .filter((p) => p in activeParamDefs);
-    const rawName = String(form.get("name") ?? "").trim();
-    const name = rawName || "changes"; // plan name inside the XML, exactly as typed
-    const fileBase = name.replace(/[^\w.-]+/g, "_");
-
-    // 1. read the CSV / Excel
-    const parsed = await readInput(input.name, await toBuffer(input));
-    const { header, rows } = canonicalize(parsed.header, parsed.rows, ["mrbtsId", "lnBtsId", "lnCelId", ...allKnownParamNames]);
-    for (const col of ["mrbtsId", "lnCelId"]) {
-      if (!header.includes(col)) return fail(`Column "${col}" was not found in the input file.`);
-    }
-
-    // Fallback: If a header column is not in activeParamDefs but was requested, or if none matched,
-    // allow unrecognized parameter columns from CSV to fall back to NOKLTE:LNCEL
-    for (const col of header) {
-      if (!["mrbtsId", "lnBtsId", "lnCelId"].includes(col) && !activeParamDefs[col]) {
-        // Fallback mapping: treat unknown LTE cell parameter as NOKLTE:LNCEL
-        activeParamDefs[col] = { cls: "NOKLTE:LNCEL", suffix: "", defaultOn: false };
-      }
-    }
-
-    const defaultNames = Object.keys(activeParamDefs).filter((k) => activeParamDefs[k].defaultOn);
+    const defaultNames = defaultParamNamesFor(tech).filter((p) => activeParamDefs[p]);
     const params = (requested.length ? requested : defaultNames).filter((p) => header.includes(p));
     if (params.length === 0) return fail(`None of the parameter columns (${allKnownParamNames.join(", ")}) were found in the input file.`);
 

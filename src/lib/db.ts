@@ -2,7 +2,14 @@ import JSZip from "jszip";
 import { gunzipSync } from "node:zlib";
 import { createExtractorFromData } from "node-unrar-js";
 import MDBReader from "mdb-reader";
-import { DEFAULT_VERSION, PARAM_NAMES } from "./config";
+import {
+  DEFAULT_NR_VERSION,
+  DEFAULT_VERSION,
+  NR_PARAMS,
+  PARAM_NAMES,
+  paramNamesFor,
+  type ParamDef,
+} from "./config";
 
 export type DbObject = { cls: string; version: string; p: Record<string, string> };
 
@@ -116,6 +123,7 @@ function scanXml(data: Buffer, wanted: Set<string>, into: DbLoad) {
     // are re-checked against the set, so a collision can never produce a wrong match.
     let h = 0x811c9dc5;
     let hasLncel = false;
+    let hasNrcell = false;
     for (let i = vs; i < ve; i++) {
       const b = data[i];
       h ^= b;
@@ -123,8 +131,11 @@ function scanXml(data: Buffer, wanted: Set<string>, into: DbLoad) {
       if (b === 47 && data[i + 1] === 76 && data[i + 2] === 78 && data[i + 3] === 67 && data[i + 4] === 69 && data[i + 5] === 76) {
         hasLncel = true; // "/LNCEL"
       }
+      if (b === 47 && data[i + 1] === 78 && data[i + 2] === 82 && data[i + 3] === 67 && data[i + 4] === 69 && data[i + 5] === 76 && data[i + 6] === 76) {
+        hasNrcell = true; // "/NRCELL"
+      }
     }
-    if (hasLncel) into.scanned++;
+    if (hasLncel || hasNrcell) into.scanned++;
 
     if (hashes.has(h)) {
       const dn = data.toString("utf8", vs, ve);
@@ -135,11 +146,11 @@ function scanXml(data: Buffer, wanted: Set<string>, into: DbLoad) {
         if (gt !== -1) {
           const selfClose = data[gt - 1] === 47; // '/'
           const tag = data.toString("latin1", tagStart, selfClose ? gt - 1 : gt);
-          const cls = dn.endsWith("/LNCEL_FDD-0")
-            ? "NOKLTE:LNCEL_FDD"
-            : dn.endsWith("/LNCEL_TDD-0")
-              ? "NOKLTE:LNCEL_TDD"
-              : "NOKLTE:LNCEL";
+          let cls = "NOKLTE:LNCEL";
+          if (dn.endsWith("/LNCEL_FDD-0")) cls = "NOKLTE:LNCEL_FDD";
+          else if (dn.endsWith("/LNCEL_TDD-0")) cls = "NOKLTE:LNCEL_TDD";
+          else if (dn.includes("/LNREL-")) cls = "NOKLTE:LNREL";
+          else if (dn.includes("/NRCELL-")) cls = "com.nokia.srbts.nrbts:NRCELL";
           const version = attrValue(tag, "version");
           const obj = into.objects.get(dn) ?? { cls, version: "", p: {} };
           if (version) obj.version = version;
@@ -188,11 +199,16 @@ function scanMdb(data: Buffer, wanted: Set<string>, into: DbLoad) {
   // 4. Locate PC table (for pMax)
   const pcTableName = tables.find((t) => /LNCEL_PC$/i.test(t));
 
+  // 5. Locate neighbour handover relations (LNREL), keyed by lnRelId
+  const lnrelTableName = tables.find((t) => /^A_/i.test(t) && /LNREL$/i.test(t));
+
   const processTable = (
     tableName: string | undefined,
     cls: string,
     suffix: string,
     isSecondary = false,
+    idCol?: string,
+    idPrefix?: string,
   ) => {
     if (!tableName) return;
     try {
@@ -202,15 +218,17 @@ function scanMdb(data: Buffer, wanted: Set<string>, into: DbLoad) {
       const mrbtsCol = findCol(cols, ["mrbtsId", "mrbts"]);
       const btsCol = findCol(cols, ["lnBtsId", "btsId", "bts", "mrbtsId", "mrbts"]);
       const celCol = findCol(cols, ["lnCelId", "celId", "cel"]);
+      const idColumn = idCol ? findCol(cols, [idCol]) : undefined;
 
       if (!mrbtsCol || !celCol) return;
+      if (idCol && !idColumn) return;
 
       const paramCols = cols.filter(
-        (c) => c !== mrbtsCol && c !== btsCol && c !== celCol && PARAM_NAMES.includes(c),
+        (c) => c !== mrbtsCol && c !== btsCol && c !== celCol && c !== idColumn && PARAM_NAMES.includes(c),
       );
       if (paramCols.length === 0) return;
 
-      const reqCols = [mrbtsCol, btsCol, celCol, ...paramCols].filter(
+      const reqCols = [mrbtsCol, btsCol, celCol, idColumn, ...paramCols].filter(
         (c, i, arr): c is string => !!c && arr.indexOf(c) === i,
       );
 
@@ -225,7 +243,12 @@ function scanMdb(data: Buffer, wanted: Set<string>, into: DbLoad) {
         const cel = parseInt(String(r[celCol]), 10);
         if (isNaN(mrbts) || isNaN(cel)) continue;
 
-        const dn = `PLMN-PLMN/MRBTS-${mrbts}/LNBTS-${bts}/LNCEL-${cel}${suffix}`;
+        let dn = `PLMN-PLMN/MRBTS-${mrbts}/LNBTS-${bts}/LNCEL-${cel}${suffix}`;
+        if (idColumn) {
+          const idv = r[idColumn];
+          if (idv === null || idv === undefined || idv === "") continue;
+          dn += `/${idPrefix ?? ""}${String(idv)}`;
+        }
         if (!isSecondary) into.scanned++;
         if (!wanted.has(dn)) continue;
 
@@ -252,6 +275,72 @@ function scanMdb(data: Buffer, wanted: Set<string>, into: DbLoad) {
   processTable(pcTableName, "NOKLTE:LNCEL", "", true); // pMax merges into LNCEL
   processTable(fddTableName, "NOKLTE:LNCEL_FDD", "/LNCEL_FDD-0");
   processTable(tddTableName, "NOKLTE:LNCEL_TDD", "/LNCEL_TDD-0");
+  processTable(lnrelTableName, "NOKLTE:LNREL", "", false, "lnRelId", "LNREL-");
+
+  // NR (5G): the NRCELL managed object is split across many tables that all share the
+  // (mrbtsId, nrBtsId, nrCellId) key. We read every NRCELL* table and merge any column that
+  // matches a known NR parameter (either its name or its DB column, e.g. beamSet_tiltOffset).
+  const nrParamByCol = new Map<string, string>();
+  for (const [name, def] of Object.entries(NR_PARAMS)) {
+    nrParamByCol.set(name, name);
+    if (def.dbColumn) nrParamByCol.set(def.dbColumn, name);
+  }
+
+  const processNrTable = (tableName: string, isBase: boolean) => {
+    try {
+      const table = reader.getTable(tableName);
+      const cols = table.getColumnNames();
+
+      const mrbtsCol = findCol(cols, ["mrbtsId", "mrbts"]);
+      const btsCol = findCol(cols, ["nrBtsId", "btsId", "bts", "mrbtsId", "mrbts"]);
+      const celCol = findCol(cols, ["nrCellId", "celId", "cel"]);
+      if (!mrbtsCol || !celCol) return;
+
+      const mapped = cols
+        .filter((c) => c !== mrbtsCol && c !== btsCol && c !== celCol && nrParamByCol.has(c))
+        .map((c) => [c, nrParamByCol.get(c)!] as const);
+      if (mapped.length === 0) return;
+
+      const reqCols = [mrbtsCol, btsCol, celCol, ...mapped.map(([c]) => c)].filter(
+        (c, i, arr): c is string => !!c && arr.indexOf(c) === i,
+      );
+      const rows = table.getData({ columns: reqCols });
+
+      for (const r of rows) {
+        const mrbts = parseInt(String(r[mrbtsCol]), 10);
+        const bts = btsCol && r[btsCol] !== null && r[btsCol] !== undefined ? parseInt(String(r[btsCol]), 10) : mrbts;
+        const cel = parseInt(String(r[celCol]), 10);
+        if (isNaN(mrbts) || isNaN(bts) || isNaN(cel)) continue;
+
+        if (isBase) into.scanned++;
+        const dn = `PLMN-PLMN/MRBTS-${mrbts}/NRBTS-${bts}/NRCELL-${cel}`;
+        if (!wanted.has(dn)) continue;
+
+        const obj: DbObject = into.objects.get(dn) ?? {
+          cls: "com.nokia.srbts.nrbts:NRCELL",
+          version: DEFAULT_NR_VERSION,
+          p: {},
+        };
+        for (const [col, param] of mapped) {
+          const val = r[col];
+          if (val !== null && val !== undefined && val !== "") obj.p[param] = String(val);
+        }
+        into.objects.set(dn, obj);
+      }
+    } catch (e) {
+      console.warn(`Error scanning MDB table ${tableName}:`, e);
+    }
+  };
+
+  const wantsNr = [...wanted].some((d) => d.includes("/NRCELL-"));
+  if (wantsNr) {
+    for (const t of tables) {
+      if (!/NRCELL/i.test(t) || /NRADJNRCELL/i.test(t)) continue;
+      // Skip sub-object tables that carry their own id column (e.g. NRDLMUMIMO) - their columns do
+      // not map to base NRCELL parameters, so processNrTable simply returns without doing anything.
+      processNrTable(t, /NRBTS_NRCELL$/i.test(t));
+    }
+  }
 }
 
 type Kind = "xml" | "gz" | "zip" | "rar" | "mdb" | null;

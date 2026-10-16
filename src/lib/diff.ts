@@ -1,4 +1,4 @@
-import { DEFAULT_VERSION, PARAMS, type ParamDef } from "./config";
+import { DEFAULT_NR_VERSION, DEFAULT_VERSION, PARAMS, type ParamDef, type Tech } from "./config";
 import type { DbObject } from "./db";
 import type { Change, Row } from "./types";
 
@@ -11,17 +11,55 @@ export function norm(v: string | undefined): string {
 
 type Ids = { mrbts: number; bts: number; cel: number };
 
-function ids(r: Row): Ids | null {
+function idsFor(tech: Tech | undefined, r: Row): Ids | null {
+  const t = tech ?? "LTE";
   const toInt = (s: string | undefined) => (s && /^-?\d+(\.0+)?$/.test(s.trim()) ? parseInt(s, 10) : NaN);
   const mrbts = toInt(r.mrbtsId);
+  if (t === "NR") {
+    const cel = toInt(r.nrCellId);
+    const bts = r.nrBtsId ? toInt(r.nrBtsId) : mrbts;
+    if ([mrbts, bts, cel].some(Number.isNaN)) return null;
+    return { mrbts, bts, cel };
+  }
   const cel = toInt(r.lnCelId);
   const bts = r.lnBtsId ? toInt(r.lnBtsId) : mrbts;
   if ([mrbts, bts, cel].some(Number.isNaN)) return null;
   return { mrbts, bts, cel };
 }
 
-export function cellDistName(i: Ids) {
+function ids(r: Row): Ids | null {
+  return idsFor("LTE", r);
+}
+
+export function baseDistName(tech: Tech | undefined, i: Ids): string {
+  const t = tech ?? "LTE";
+  if (t === "NR") {
+    return `PLMN-PLMN/MRBTS-${i.mrbts}/NRBTS-${i.bts}/NRCELL-${i.cel}`;
+  }
   return `PLMN-PLMN/MRBTS-${i.mrbts}/LNBTS-${i.bts}/LNCEL-${i.cel}`;
+}
+
+export function cellDistName(i: Ids) {
+  return baseDistName("LTE", i);
+}
+
+/** Resolve the full distName a parameter targets. */
+export function objectDistName(i: Ids, r: Row, def: ParamDef): string | null {
+  const tech = def.tech ?? "LTE";
+  const base = baseDistName(tech, i);
+  if (def.idColumn) {
+    const id = (r[def.idColumn] ?? "").trim();
+    if (id === "") return null;
+    return `${base}/${def.idPrefix ?? ""}${id}`;
+  }
+  return base + def.suffix;
+}
+
+/** Human label for the managed-object class a parameter maps to (used in warnings). */
+export function objLabel(def: ParamDef): string {
+  if (def.idPrefix) return def.idPrefix.replace(/-$/, "");
+  if (def.suffix) return def.suffix.slice(1);
+  return def.cls.replace("NOKLTE:", "");
 }
 
 /** Every distName we will need to look up - lets the DB loader skip the rest of the network. */
@@ -32,11 +70,13 @@ export function wantedDistNames(
 ): Set<string> {
   const out = new Set<string>();
   for (const r of rows) {
-    const i = ids(r);
-    if (!i) continue;
     for (const p of params) {
       const def = paramDefs[p] ?? PARAMS[p];
-      if (def) out.add(cellDistName(i) + def.suffix);
+      if (!def) continue;
+      const i = idsFor(def.tech, r);
+      if (!i) continue;
+      const dn = objectDistName(i, r, def);
+      if (dn) out.add(dn);
     }
   }
   return out;
@@ -61,17 +101,22 @@ export function buildChanges(
   let unchanged = 0;
 
   rows.forEach((r, idx) => {
-    const i = ids(r);
-    if (!i) {
-      warnings.push(`Row ${idx + 2}: invalid mrbtsId / lnBtsId / lnCelId - skipped`);
-      return;
-    }
     for (const p of params) {
       const next = r[p];
       if (next === undefined || next === "") continue; // blank CSV cell = nothing planned
 
-      const def = paramDefs[p] ?? PARAMS[p] ?? { cls: "NOKLTE:LNCEL", suffix: "", defaultOn: false };
-      const dn = cellDistName(i) + def.suffix;
+      const def = paramDefs[p] ?? PARAMS[p] ?? { cls: "NOKLTE:LNCEL", suffix: "", defaultOn: false, tech: "LTE" };
+      const tech = def.tech ?? "LTE";
+      const i = idsFor(tech, r);
+      if (!i) {
+        warnings.push(`Row ${idx + 2}: invalid mrbtsId / bts / cell for ${p} - skipped`);
+        continue;
+      }
+      const dn = objectDistName(i, r, def);
+      if (dn === null) {
+        warnings.push(`Row ${idx + 2}: "${p}" needs a ${def.idColumn} value - skipped`);
+        continue;
+      }
       const cur = db ? db.get(dn) : undefined;
       if (db && !cur) {
         const list = missingObj.get(p) ?? [];
@@ -80,8 +125,6 @@ export function buildChanges(
         continue;
       }
 
-      // Parameter absent from the DB export = currently unset, so the planned value IS a change.
-      // With no database at all there is nothing to compare, so every planned value is a change.
       const old = cur ? cur.p[p] : undefined;
       if (cur) {
         if (old === undefined) notSet++;
@@ -96,19 +139,19 @@ export function buildChanges(
         ({
           distName: dn,
           cls: def.cls,
-          version: cur?.version || DEFAULT_VERSION,
+          version: cur?.version || (tech === "NR" ? DEFAULT_NR_VERSION : DEFAULT_VERSION),
           mrbts: i.mrbts,
           cel: i.cel,
           params: [],
         } satisfies Change);
-      c.params.push({ name: p, old: old ?? "", new: norm(next) });
+      c.params.push({ name: p, old: old ?? "", new: norm(next), group: def.group });
       map.set(dn, c);
     }
   });
 
   for (const [p, list] of missingObj) {
-    const def = paramDefs[p] ?? PARAMS[p] ?? { cls: "NOKLTE:LNCEL", suffix: "" };
-    const obj = def.suffix ? def.suffix.slice(1) : def.cls.replace("NOKLTE:", "");
+    const def = paramDefs[p] ?? PARAMS[p] ?? { cls: "NOKLTE:LNCEL", suffix: "", tech: "LTE" };
+    const obj = objLabel(def);
     const eg = list.slice(0, 2).map((d) => d.replace("PLMN-PLMN/", "")).join(", ");
     warnings.push(`${p}: ${list.length} planned value(s) skipped - no ${obj} object in the database (e.g. ${eg})`);
   }

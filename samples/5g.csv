@@ -1,0 +1,3 @@
+mrbtsId,nrBtsId,nrCellId,angle,dlQam256PowerBackoffSub6,ssPbchBlockPower,basicBeamSet,beamSetInUse,leftEdgeAngle,rightEdgeAngle,tiltOffset,csirsPower,csiReportPeriodicity,maxCsirsNumber
+42555,42555,14,0,2,286,1,1,20,160,3,-1,5,8
+42555,42555,15,30,3,286,1,1,20,160,0,0,5,8

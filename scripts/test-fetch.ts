@@ -113,7 +113,7 @@ const rejects = async (p: Promise<unknown>, re: RegExp) => { try { await p; retu
   for (const [label, url] of [["RAR with no extension in URL", `${base}/go`], ["Drive zip", `https://drive.google.com/file/d/${id}/view`]] as const) {
     const got = await fetchDb(url);
     const parsed = await readInput("2600.csv", csv);
-    const { header, rows } = canonicalize(parsed.header, parsed.rows, ["mrbtsId", "lnBtsId", "lnCelId", ...PARAM_NAMES]);
+    const { header, rows } = canonicalize(parsed.header, parsed.rows, ["mrbtsId", "lnBtsId", "lnCelId", "lnRelId", ...PARAM_NAMES]);
     const params = DEFAULT_PARAM_NAMES.filter((p) => header.includes(p));
     const db = await loadDb([got], wantedDistNames(rows, params));
     const out = writeRaml(buildChanges(rows, params, db.objects).changes, "2600");

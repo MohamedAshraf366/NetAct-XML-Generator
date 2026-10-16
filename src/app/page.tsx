@@ -1,6 +1,6 @@
 import Converter from "@/components/Converter";
 import ThemeToggle from "@/components/ThemeToggle";
-import { DEFAULT_PARAM_NAMES, PARAM_NAMES } from "@/lib/config";
+import { ALL_PARAM_NAMES, DEFAULT_NR_PARAM_NAMES, DEFAULT_PARAM_NAMES } from "@/lib/config";
 
 function Logo() {
   return (
@@ -49,7 +49,10 @@ export default function Home() {
         </section>
 
         <div className="animate-fade-up [animation-delay:100ms]">
-          <Converter paramNames={PARAM_NAMES} defaultParams={DEFAULT_PARAM_NAMES} />
+          <Converter
+            paramNames={ALL_PARAM_NAMES}
+            defaultParams={[...DEFAULT_PARAM_NAMES, ...DEFAULT_NR_PARAM_NAMES]}
+          />
         </div>
       </div>
     </>

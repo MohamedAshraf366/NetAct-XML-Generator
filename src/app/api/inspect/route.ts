@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { fetchDb } from "@/lib/fetchDb";
 import { kindOf } from "@/lib/db";
-import { PARAM_NAMES, PARAMS } from "@/lib/config";
+import { NR_PARAMS, PARAM_NAMES, PARAMS } from "@/lib/config";
 import JSZip from "jszip";
 import { gunzipSync } from "node:zlib";
 import { createExtractorFromData } from "node-unrar-js";
@@ -68,9 +68,20 @@ function inspectMdb(data: Buffer, sourceName: string): DatabaseInspection {
       } else if (/LNCEL_PC$/i.test(tName)) {
         matchedRole = "LNCEL_PC (Power Control)";
         moClass = "NOKLTE:LNCEL";
+      } else if (/NRCELL/i.test(tName) && !/NRADJNRCELL/i.test(tName)) {
+        matchedRole = "NRCELL (5G Cell Config)";
+        moClass = "com.nokia.srbts.nrbts:NRCELL";
       }
 
-      const targetParams = cols.filter((c) => PARAM_NAMES.includes(c));
+      const nrColToParam = new Map<string, string>();
+      for (const [name, def] of Object.entries(NR_PARAMS)) {
+        nrColToParam.set(name, name);
+        if (def.dbColumn) nrColToParam.set(def.dbColumn, name);
+      }
+      const targetParams =
+        moClass === "com.nokia.srbts.nrbts:NRCELL"
+          ? cols.filter((c) => nrColToParam.has(c)).map((c) => nrColToParam.get(c)!)
+          : cols.filter((c) => PARAM_NAMES.includes(c));
       if (moClass) {
         for (const p of targetParams) {
           detectedParameters.push({ name: p, moClass, table: tName });
@@ -114,9 +125,8 @@ function inspectXml(xmlText: string, sourceName: string, bytes: number): Databas
 
   const detectedParameters: { name: string; moClass: string; table: string }[] = [];
   for (const p of paramsFound) {
-    if (p in PARAMS) {
-      detectedParameters.push({ name: p, moClass: PARAMS[p].cls, table: "RAML XML" });
-    }
+    if (p in PARAMS) detectedParameters.push({ name: p, moClass: PARAMS[p].cls, table: "RAML XML" });
+    else if (p in NR_PARAMS) detectedParameters.push({ name: p, moClass: NR_PARAMS[p].cls, table: "RAML XML" });
   }
 
   return {

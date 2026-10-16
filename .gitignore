@@ -2,3 +2,13 @@ node_modules
 .next
 next-env.d.ts
 *.tsbuildinfo
+
+# Deployment / environment
+.vercel
+.env*
+!.env.example
+
+# Large local databases and generated test fixtures
+cached.mdb
+cached.rar
+*.test-db.xml

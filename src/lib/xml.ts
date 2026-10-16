@@ -16,7 +16,30 @@ export function writeRaml(changes: Change[], name: string, now = new Date()): st
     `<header><log user="unknown" action="created" dateTime="${stamp(now)}" appInfo="Nokia NetAct Plan Editor">No description</log></header>`,
   ];
   for (const c of changes) {
-    const ps = c.params.map((p) => `<p name="${escAttr(p.name)}">${esc(p.new)}</p>`).join("");
+    // NetAct lists flat parameters and lists (each treated as a unit named by the list name)
+    // in a single alphabetical sequence; every list holds one <item> with all its sub-parameters.
+    const groups = new Map<string, typeof c.params>();
+    const units: { name: string; params: typeof c.params; isList: boolean }[] = [];
+    for (const p of c.params) {
+      if (p.group) {
+        if (!groups.has(p.group)) groups.set(p.group, []);
+        groups.get(p.group)!.push(p);
+      } else {
+        units.push({ name: p.name, params: [p], isList: false });
+      }
+    }
+    for (const [gname, list] of groups) units.push({ name: gname, params: list, isList: true });
+
+    const ps = units
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }))
+      .map((u) => {
+        const subs = u.params
+          .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }))
+          .map((p) => `<p name="${escAttr(p.name)}">${esc(p.new)}</p>`)
+          .join("");
+        return u.isList ? `<list name="${escAttr(u.name)}"><item>${subs}</item></list>` : subs;
+      })
+      .join("");
     parts.push(
       `<managedObject class="${c.cls}" operation="update" version="${escAttr(c.version)}" distName="${escAttr(c.distName)}">${ps}</managedObject>`,
     );
