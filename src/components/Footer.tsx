@@ -42,7 +42,7 @@ const socials = [
 export default function Footer() {
   return (
     <footer className="w-full border-t border-slate-200/80 bg-white/60 dark:border-white/10 dark:bg-white/[0.02]">
-      <div className="mx-auto flex max-w-6xl flex-col items-center gap-3 px-6 py-6 text-center sm:flex-row sm:justify-between sm:text-start">
+      <div className="mx-auto flex max-w-6xl flex-col items-center gap-3 px-4 py-6 text-center sm:flex-row sm:justify-between sm:px-6 sm:text-start">
         <p className="text-sm text-slate-500 dark:text-slate-400">
           Built by{" "}
           <span className="bg-gradient-to-r from-brand-500 to-amber-500 bg-clip-text font-semibold text-transparent">

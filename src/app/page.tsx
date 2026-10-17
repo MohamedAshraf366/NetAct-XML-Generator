@@ -31,24 +31,24 @@ export default function Home() {
         <div className="aurora-blob bottom-[-20%] left-[20%] h-[34rem] w-[34rem] bg-violet-500/30 [animation-delay:-8s]" />
       </div>
 
-      <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:py-12">
-        <header className="mb-10 flex items-center justify-between gap-4 animate-fade-up">
-          <div className="flex items-center gap-3">
+      <div className="mx-auto max-w-6xl px-4 py-6 sm:px-6 sm:py-8 lg:py-12">
+        <header className="mb-8 flex items-center justify-between gap-4 animate-fade-up sm:mb-10">
+          <div className="flex min-w-0 items-center gap-3">
             <Logo />
-            <div className="leading-tight">
-              <p className="font-semibold tracking-tight">NetAct XML Generator</p>
-              <p className="text-xs text-slate-500 dark:text-slate-400">CSV / Excel → NetAct XML</p>
+            <div className="min-w-0 leading-tight">
+              <p className="truncate font-semibold tracking-tight">NetAct XML Generator</p>
+              <p className="truncate text-xs text-slate-500 dark:text-slate-400">CSV / Excel → NetAct XML</p>
             </div>
           </div>
           <ThemeToggle />
         </header>
 
-        <section className="mb-10 max-w-3xl animate-fade-up">
+        <section className="mb-8 max-w-3xl animate-fade-up sm:mb-10">
           <span className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white/70 px-3 py-1 text-xs font-medium text-slate-600 backdrop-blur-xl dark:border-white/10 dark:bg-white/5 dark:text-slate-300">
             <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
             Only changed values are exported
           </span>
-          <h1 className="mt-4 font-semibold tracking-tight text-4xl sm:text-5xl">
+          <h1 className="mt-4 font-semibold tracking-tight text-3xl sm:text-4xl md:text-5xl">
             Compare plans, ship only the <span className="text-gradient">deltas</span>.
           </h1>
           <p className="mt-4 text-base leading-relaxed text-slate-600 dark:text-slate-400">

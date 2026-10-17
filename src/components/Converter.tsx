@@ -40,7 +40,7 @@ function Stat({ label, value, icon, accent }: { label: string; value: number | s
           <path d={icon} />
         </svg>
       </div>
-      <p className={`mt-1 text-2xl font-semibold tabular-nums ${accent ? "text-gradient" : "text-slate-900 dark:text-white"}`}>{value}</p>
+      <p className={`mt-1 text-xl font-semibold tabular-nums sm:text-2xl ${accent ? "text-gradient" : "text-slate-900 dark:text-white"}`}>{value}</p>
     </div>
   );
 }
@@ -110,7 +110,7 @@ function CopyButton({ text }: { text: string }) {
     }
   };
   return (
-    <button type="button" onClick={copy} className="btn-ghost !px-3 !py-1.5 text-xs">
+    <button type="button" onClick={copy} className="btn-ghost shrink-0 !px-3 !py-1.5 text-xs">
       {done ? (
         <>
           <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -328,7 +328,7 @@ export default function Converter({ paramNames, paramMeta }: { paramNames: strin
 
   return (
     <div className="space-y-8">
-      <section className="grid gap-6 md:grid-cols-2">
+      <section className="space-y-6">
         <div className="surface p-5">
           <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
             <div className="flex items-start gap-3">
@@ -390,7 +390,7 @@ export default function Converter({ paramNames, paramMeta }: { paramNames: strin
               </div>
 
               <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-white/10">
-                <table className="w-full text-left text-sm">
+                <table className="w-full min-w-[42rem] text-left text-sm">
                   <thead className="border-b border-slate-200 bg-slate-50/80 text-xs uppercase tracking-wide text-slate-500 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-400">
                     <tr>
                       <th className="px-2 py-2 font-medium">mrbtsId</th>
@@ -483,120 +483,122 @@ export default function Converter({ paramNames, paramMeta }: { paramNames: strin
           )}
         </div>
         <div className="surface p-5">
-          <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
-            <div className="flex items-start gap-3">
-              <StepBadge n={2} />
-              <div>
-                <p className="flex items-center gap-2 text-sm font-semibold text-slate-800 dark:text-slate-200">
-                  Database
-                  <span className="rounded-full border border-slate-200 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-slate-400 dark:border-white/10 dark:text-slate-500">
-                    Optional
-                  </span>
-                </p>
-                <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
-                  Compare against the current values of the network.
-                </p>
-              </div>
-            </div>
-            <div className="segmented">
-              <button
-                type="button"
-                onClick={() => setDbMode("upload")}
-                className={`seg-btn inline-flex items-center gap-1.5 ${dbMode === "upload" ? "seg-btn-active" : ""}`}
-              >
-                <SegIcon d={ICONS.upload} />
-                Upload files
-              </button>
-              <button
-                type="button"
-                onClick={() => setDbMode("link")}
-                className={`seg-btn inline-flex items-center gap-1.5 ${dbMode === "link" ? "seg-btn-active" : ""}`}
-              >
-                <SegIcon d={ICONS.link} />
-                Link
-              </button>
+          <div className="mb-4 flex items-start gap-3">
+            <StepBadge n={2} />
+            <div>
+              <p className="flex items-center gap-2 text-sm font-semibold text-slate-800 dark:text-slate-200">
+                Database
+                <span className="rounded-full border border-slate-200 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-slate-400 dark:border-white/10 dark:text-slate-500">
+                  Optional
+                </span>
+              </p>
+              <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+                Compare against the current values of the network.
+              </p>
             </div>
           </div>
-          {dbMode === "upload" ? (
-            <>
-              <DropZone
-                label=""
-                title="Drop your database export here"
-                hint=".mdb, .accdb, .rar, .zip, .xml or .xml.gz — one or several files"
-                accept=".rar,.zip,.mdb,.accdb,.xml,.gz"
-                multiple
-                files={db}
-                onChange={setDb}
-              />
-              <div className="mt-3 flex items-center justify-between gap-3">
-                <p className="text-xs text-slate-400 dark:text-slate-500">
-                  {db.length === 0
-                    ? "No files selected"
-                    : `${db.length} file${db.length > 1 ? "s" : ""} — ${sizeLabel(db.reduce((n, f) => n + f.size, 0))}`}
-                </p>
+          <div className="grid gap-5 md:grid-cols-2">
+            <div className="min-w-0 space-y-3">
+              <div className="segmented">
                 <button
                   type="button"
-                  onClick={() => setDb([])}
-                  disabled={db.length === 0}
-                  className="shrink-0 text-xs text-slate-400 transition hover:text-red-600 disabled:opacity-40 disabled:hover:text-slate-400 dark:hover:text-red-400"
+                  onClick={() => setDbMode("upload")}
+                  className={`seg-btn inline-flex items-center gap-1.5 ${dbMode === "upload" ? "seg-btn-active" : ""}`}
                 >
-                  Clear
+                  <SegIcon d={ICONS.upload} />
+                  Upload files
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDbMode("link")}
+                  className={`seg-btn inline-flex items-center gap-1.5 ${dbMode === "link" ? "seg-btn-active" : ""}`}
+                >
+                  <SegIcon d={ICONS.link} />
+                  Link
                 </button>
               </div>
-            </>
-          ) : (
-            <>
-              <textarea
-                value={links}
-                onChange={(e) => setLinks(e.target.value)}
-                rows={3}
-                spellCheck={false}
-                className="field resize-y font-mono text-xs"
-                placeholder={"https://example.com/Dump.rar\nPaste direct links to .mdb/.accdb/.rar/.zip/.xml/.xml.gz — one per line"}
-              />
-              <div className="mt-1.5 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-xs">
-                <span className="text-slate-400 dark:text-slate-500">
-                  {linkEntries.length === 0
-                    ? "No links yet"
-                    : `${linkEntries.length} link${linkEntries.length > 1 ? "s" : ""} detected`}
-                </span>
-                {badLinkCount > 0 && (
-                  <span className="text-amber-600 dark:text-amber-400">
-                    {badLinkCount} {badLinkCount > 1 ? "entries" : "entry"} must start with http(s)://
-                  </span>
-                )}
-              </div>
-            </>
-          )}
-          <div className="mt-4 space-y-3 text-xs leading-relaxed text-slate-500 dark:text-slate-400">
-            <p>
-              The generated XML contains
-              <span className="font-medium text-slate-700 dark:text-slate-200"> only the differences</span> between your
-              planned values and this database — exactly like a NetAct plan export.
-            </p>
-            <div className="flex flex-wrap gap-1.5">
-              {[
-                ["NetAct dump", ".mdb / .accdb"],
-                ["Archive", ".rar / .zip"],
-                ["RAML export", ".xml / .xml.gz"],
-              ].map(([k, v]) => (
-                <span
-                  key={k}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white/60 px-2 py-1 dark:border-white/10 dark:bg-white/[0.03]"
-                >
-                  <span className="font-medium text-slate-600 dark:text-slate-300">{k}</span>
-                  <span className="font-mono text-[11px] text-brand-600 dark:text-brand-400">{v}</span>
-                </span>
-              ))}
+              {dbMode === "upload" ? (
+                <>
+                  <DropZone
+                    label=""
+                    title="Drop your database export here"
+                    hint=".mdb, .accdb, .rar, .zip, .xml or .xml.gz — one or several files"
+                    accept=".rar,.zip,.mdb,.accdb,.xml,.gz"
+                    multiple
+                    files={db}
+                    onChange={setDb}
+                  />
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="min-w-0 truncate text-xs text-slate-400 dark:text-slate-500">
+                      {db.length === 0
+                        ? "No files selected"
+                        : `${db.length} file${db.length > 1 ? "s" : ""} — ${sizeLabel(db.reduce((n, f) => n + f.size, 0))}`}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => setDb([])}
+                      disabled={db.length === 0}
+                      className="shrink-0 text-xs text-slate-400 transition hover:text-red-600 disabled:opacity-40 disabled:hover:text-slate-400 dark:hover:text-red-400"
+                    >
+                      Clear
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <textarea
+                    value={links}
+                    onChange={(e) => setLinks(e.target.value)}
+                    rows={4}
+                    spellCheck={false}
+                    className="field resize-y font-mono text-xs"
+                    placeholder={"https://example.com/Dump.rar\nPaste direct links to .mdb/.accdb/.rar/.zip/.xml/.xml.gz — one per line"}
+                  />
+                  <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-xs">
+                    <span className="text-slate-400 dark:text-slate-500">
+                      {linkEntries.length === 0
+                        ? "No links yet"
+                        : `${linkEntries.length} link${linkEntries.length > 1 ? "s" : ""} detected`}
+                    </span>
+                    {badLinkCount > 0 && (
+                      <span className="text-amber-600 dark:text-amber-400">
+                        {badLinkCount} {badLinkCount > 1 ? "entries" : "entry"} must start with http(s)://
+                      </span>
+                    )}
+                  </div>
+                </>
+              )}
             </div>
-            <p>
-              Links are downloaded by the server, so hosting upload limits do not apply. Uploaded archives are unpacked
-              automatically and only the needed cells are read. Files are processed for this request only and are never
-              stored.
-            </p>
-            <p className="text-brand-600 dark:text-brand-400">
-              Optional — leave this empty to write every planned value as an update.
-            </p>
+            <div className="min-w-0 space-y-3 rounded-xl border border-slate-200/80 bg-slate-50/60 p-4 text-xs leading-relaxed text-slate-500 dark:border-white/10 dark:bg-white/[0.02] dark:text-slate-400">
+              <p>
+                The generated XML contains
+                <span className="font-medium text-slate-700 dark:text-slate-200"> only the differences</span> between
+                your planned values and this database — exactly like a NetAct plan export.
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {[
+                  ["NetAct dump", ".mdb / .accdb"],
+                  ["Archive", ".rar / .zip"],
+                  ["RAML export", ".xml / .xml.gz"],
+                ].map(([k, v]) => (
+                  <span
+                    key={k}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white/60 px-2 py-1 dark:border-white/10 dark:bg-white/[0.03]"
+                  >
+                    <span className="font-medium text-slate-600 dark:text-slate-300">{k}</span>
+                    <span className="font-mono text-[11px] text-brand-600 dark:text-brand-400">{v}</span>
+                  </span>
+                ))}
+              </div>
+              <p>
+                Links are downloaded by the server, so hosting upload limits do not apply. Uploaded archives are
+                unpacked automatically and only the needed cells are read. Files are processed for this request only and
+                are never stored.
+              </p>
+              <p className="text-brand-600 dark:text-brand-400">
+                Optional — leave this empty to write every planned value as an update.
+              </p>
+            </div>
           </div>
         </div>
       </section>
@@ -661,7 +663,7 @@ export default function Converter({ paramNames, paramMeta }: { paramNames: strin
             </p>
           </div>
 
-          <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 sm:gap-4">
             <Stat label="Rows read" value={result.stats.inputRows} icon={STAT_ICONS.rows} />
             <Stat label="Matched in database" value={result.stats.dbObjectsMatched} icon={STAT_ICONS.match} />
             <Stat label="Changed objects" value={result.stats.changedObjects} icon={STAT_ICONS.changed} accent />
@@ -699,7 +701,7 @@ export default function Converter({ paramNames, paramMeta }: { paramNames: strin
               </button>
             )}
 
-            <div className="ml-auto flex items-center gap-2">
+            <div className="ml-auto flex shrink-0 items-center gap-2">
               {hasEdits && (
                 <button onClick={() => setEdits({})} className="btn-ghost !px-3 !py-1.5 text-xs" title="Discard manual edits">
                   Reset edits
@@ -720,7 +722,7 @@ export default function Converter({ paramNames, paramMeta }: { paramNames: strin
             </p>
           ) : view === "table" ? (
             <div className="surface overflow-x-auto">
-              <table className="w-full text-left text-sm">
+              <table className="w-full min-w-[40rem] text-left text-sm">
                 <thead className="border-b border-slate-200 text-xs uppercase tracking-wide text-slate-500 dark:border-white/10 dark:text-slate-400">
                   <tr>
                     <th className="px-4 pt-3 font-medium">distName</th>
@@ -791,16 +793,16 @@ export default function Converter({ paramNames, paramMeta }: { paramNames: strin
             </div>
           ) : (
             <div className="surface overflow-hidden">
-              <div className="flex items-center justify-between border-b border-white/10 bg-slate-900/60 px-4 py-2">
-                <span className="flex items-center gap-2 font-mono text-xs text-slate-400">
-                  <span className="h-2.5 w-2.5 rounded-full bg-red-400/70" />
-                  <span className="h-2.5 w-2.5 rounded-full bg-amber-400/70" />
-                  <span className="h-2.5 w-2.5 rounded-full bg-emerald-400/70" />
-                  <span className="ml-2">{downloadFileName}</span>
+              <div className="flex items-center justify-between gap-3 border-b border-white/10 bg-slate-900/60 px-4 py-2">
+                <span className="flex min-w-0 items-center gap-2 font-mono text-xs text-slate-400">
+                  <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-red-400/70" />
+                  <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-amber-400/70" />
+                  <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-emerald-400/70" />
+                  <span className="ml-2 truncate">{downloadFileName}</span>
                 </span>
                 <CopyButton text={result.xml} />
               </div>
-              <pre className="max-h-[32rem] overflow-auto bg-[#0b1020] p-4 font-mono text-xs leading-relaxed text-slate-200">{preview}</pre>
+              <pre className="max-h-[70vh] overflow-auto bg-[#0b1020] p-4 font-mono text-xs leading-relaxed text-slate-200 sm:max-h-[32rem]">{preview}</pre>
             </div>
           )}
         </section>

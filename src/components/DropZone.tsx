@@ -43,7 +43,7 @@ export default function DropZone({ label, title, hint, accept, multiple, files, 
           setOver(false);
           take(e.dataTransfer.files);
         }}
-        className={`flex cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed px-4 py-8 text-center transition ${
+        className={`flex cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed px-4 py-6 text-center transition sm:py-8 ${
           over
             ? "border-brand-500 bg-brand-500/10"
             : "border-slate-300 bg-white/60 hover:border-brand-400 hover:bg-brand-500/5 dark:border-white/15 dark:bg-white/[0.02] dark:hover:border-brand-400/60"

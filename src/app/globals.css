@@ -177,3 +177,13 @@
     animation: none !important;
   }
 }
+
+/* iOS Safari zooms the page when a focused input renders below 16px. */
+@media (max-width: 640px) {
+  .field,
+  .field-cell,
+  .field-inline,
+  textarea.field {
+    font-size: 16px;
+  }
+}
