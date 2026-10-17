@@ -54,15 +54,18 @@ const newManualRow = (): ManualRow => ({ id: ++rowSeq, mrbtsId: "", btsId: "", c
 
 const csvCell = (v: string) => (/[",\n\r]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
 
-type FilterField = "all" | "distName" | "param" | "old" | "new";
+/** One input per table column - the filters live in the header, not in a search bar. */
+type ColFilter = "distName" | "cls" | "param" | "old" | "new";
 
-const FILTER_PLACEHOLDERS: Record<FilterField, string> = {
-  all: "Search cell, parameter or value…",
-  distName: "Filter by distName…",
-  param: "Filter by parameter name…",
-  old: "Filter by database value…",
-  new: "Filter by new value…",
+const COL_FILTERS: ColFilter[] = ["distName", "cls", "param", "old", "new"];
+const COL_PLACEHOLDERS: Record<ColFilter, string> = {
+  distName: "Filter…",
+  cls: "Filter…",
+  param: "Filter…",
+  old: "Filter…",
+  new: "Filter…",
 };
+const emptyColFilters = (): Record<ColFilter, string> => ({ distName: "", cls: "", param: "", old: "", new: "" });
 
 function CopyButton({ text }: { text: string }) {
   const [done, setDone] = useState(false);
@@ -112,8 +115,7 @@ export default function Converter({ paramNames, paramMeta }: { paramNames: strin
   const [result, setResult] = useState<ConvertResponse | null>(null);
   const [view, setView] = useState<"table" | "xml">("table");
   const [edits, setEdits] = useState<Record<string, string>>({});
-  const [query, setQuery] = useState("");
-  const [filterField, setFilterField] = useState<FilterField>("all");
+  const [colFilters, setColFilters] = useState<Record<ColFilter, string>>(emptyColFilters);
 
   const onInput = (files: File[]) => {
     setInput(files);
@@ -209,8 +211,7 @@ export default function Converter({ paramNames, paramMeta }: { paramNames: strin
       if (!json) throw new Error("The server returned an unexpected response.");
       setResult(json);
       setEdits({});
-      setQuery("");
-      setFilterField("all");
+      setColFilters(emptyColFilters());
       setView("table");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Something went wrong.");
@@ -241,32 +242,39 @@ export default function Converter({ paramNames, paramMeta }: { paramNames: strin
   }, [result, edits, effectiveChanges]);
 
   const visibleChanges = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return effectiveChanges;
+    // Each header input is an independent substring filter; all active ones are AND-ed together.
+    const q = (k: ColFilter) => colFilters[k].trim().toLowerCase();
+    const objFilters: Array<[("distName" | "cls") & ColFilter, string]> = [
+      ["distName", q("distName")],
+      ["cls", q("cls")],
+    ];
+    const rowFilters: Array<[("param" | "old" | "new") & ColFilter, string]> = [
+      ["param", q("param")],
+      ["old", q("old")],
+      ["new", q("new")],
+    ];
+    if (!objFilters.some(([, v]) => v) && !rowFilters.some(([, v]) => v)) return effectiveChanges;
+
     const out: Change[] = [];
+    const hasRowFilter = rowFilters.some(([, v]) => v);
     for (const c of effectiveChanges) {
-      if (filterField === "distName") {
-        if (c.distName.toLowerCase().includes(q)) out.push(c);
-        continue;
-      }
-      if (filterField === "param" || filterField === "old" || filterField === "new") {
-        // Keep only the parameter rows that match, so the table shows exactly what the filter found.
-        const params = c.params.filter((p) =>
-          (filterField === "param" ? p.name : filterField === "old" ? p.old : p.new).toLowerCase().includes(q),
-        );
-        if (params.length > 0) out.push({ ...c, params });
-        continue;
-      }
-      if (
-        c.distName.toLowerCase().includes(q) ||
-        c.cls.toLowerCase().includes(q) ||
-        c.params.some((p) => p.name.toLowerCase().includes(q) || p.new.toLowerCase().includes(q) || p.old.toLowerCase().includes(q))
-      ) {
+      const text = { distName: c.distName.toLowerCase(), cls: c.cls.toLowerCase() };
+      if (objFilters.some(([k, v]) => v && !text[k].includes(v))) continue;
+      if (!hasRowFilter) {
         out.push(c);
+        continue;
       }
+      // Row-level filters keep only the parameter rows that match, so the table shows exactly what was filtered.
+      const params = c.params.filter((p) => {
+        const cell = { param: p.name, old: p.old, new: p.new };
+        return rowFilters.every(([k, v]) => !v || cell[k].toLowerCase().includes(v));
+      });
+      if (params.length > 0) out.push({ ...c, params });
     }
     return out;
-  }, [effectiveChanges, query, filterField]);
+  }, [effectiveChanges, colFilters]);
+
+  const activeFilters = COL_FILTERS.some((k) => colFilters[k].trim() !== "");
 
   const hasEdits = Object.keys(edits).length > 0;
 
@@ -583,42 +591,15 @@ export default function Converter({ paramNames, paramMeta }: { paramNames: strin
               ))}
             </div>
 
-            {view === "table" && (
-              <div className="relative min-w-[12rem] flex-1">
-                <svg
-                  viewBox="0 0 24 24"
-                  className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  aria-hidden="true"
-                >
-                  <circle cx="11" cy="11" r="8" />
-                  <path d="m21 21-4.3-4.3" />
-                </svg>
-                <input
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  placeholder={FILTER_PLACEHOLDERS[filterField]}
-                  spellCheck={false}
-                  className="field pl-9 pr-28 text-sm"
-                  aria-label="Filter changes"
-                />
-                <select
-                  value={filterField}
-                  onChange={(e) => setFilterField(e.target.value as FilterField)}
-                  className="absolute right-1.5 top-1/2 -translate-y-1/2 cursor-pointer rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs font-medium text-slate-600 transition hover:border-brand-400 focus:outline-none focus:ring-2 focus:ring-brand-500/20 dark:border-white/10 dark:bg-white/5 dark:text-slate-300"
-                  aria-label="Filter field"
-                >
-                  <option value="all">All</option>
-                  <option value="distName">distName</option>
-                  <option value="param">Parameter</option>
-                  <option value="old">Database</option>
-                  <option value="new">New value</option>
-                </select>
-              </div>
+            {view === "table" && activeFilters && (
+              <button
+                type="button"
+                onClick={() => setColFilters(emptyColFilters())}
+                className="btn-ghost !px-3 !py-1.5 text-xs"
+                title="Clear all column filters"
+              >
+                Clear filters
+              </button>
             )}
 
             <div className="ml-auto flex items-center gap-2">
@@ -645,18 +626,32 @@ export default function Converter({ paramNames, paramMeta }: { paramNames: strin
               <table className="w-full text-left text-sm">
                 <thead className="border-b border-slate-200 text-xs uppercase tracking-wide text-slate-500 dark:border-white/10 dark:text-slate-400">
                   <tr>
-                    <th className="px-4 py-3 font-medium">distName</th>
-                    <th className="px-4 py-3 font-medium">Class</th>
-                    <th className="px-4 py-3 font-medium">Parameter</th>
-                    <th className="px-4 py-3 text-right font-medium">Database</th>
-                    <th className="px-4 py-3 text-right font-medium">New</th>
+                    <th className="px-4 pt-3 font-medium">distName</th>
+                    <th className="px-4 pt-3 font-medium">Class</th>
+                    <th className="px-4 pt-3 font-medium">Parameter</th>
+                    <th className="px-4 pt-3 text-right font-medium">Database</th>
+                    <th className="px-4 pt-3 text-right font-medium">New</th>
+                  </tr>
+                  <tr className="normal-case tracking-normal">
+                    {(["distName", "cls", "param", "old", "new"] as ColFilter[]).map((key) => (
+                      <th key={key} className="px-4 pb-3 pt-1.5 font-normal">
+                        <input
+                          value={colFilters[key]}
+                          onChange={(e) => setColFilters((prev) => ({ ...prev, [key]: e.target.value }))}
+                          placeholder={COL_PLACEHOLDERS[key]}
+                          spellCheck={false}
+                          aria-label={`Filter ${key === "old" ? "database value" : key === "cls" ? "class" : key === "new" ? "new value" : key}`}
+                          className="field w-full !py-1 text-xs"
+                        />
+                      </th>
+                    ))}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-white/5">
                   {visibleChanges.length === 0 && (
                     <tr>
                       <td colSpan={5} className="px-4 py-10 text-center text-sm text-slate-600 dark:text-slate-400">
-                        No cells match “{query}”.
+                        {activeFilters ? "No cells match the current filters." : "No cells match."}
                       </td>
                     </tr>
                   )}
