@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import DropZone from "./DropZone";
+import DropZone, { sizeLabel } from "./DropZone";
 import type { Change, ConvertResponse } from "@/lib/types";
 import { writeRaml } from "@/lib/xml";
 
@@ -46,6 +46,37 @@ function Stat({ label, value, icon, accent }: { label: string; value: number | s
 }
 
 type ParamMeta = { techs: Array<"LTE" | "NR">; needsRelId: boolean };
+
+const ICONS = {
+  upload: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12",
+  edit: "M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z",
+  link: "M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71",
+};
+
+function SegIcon({ d }: { d: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      className="h-3.5 w-3.5"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d={d} />
+    </svg>
+  );
+}
+
+function StepBadge({ n }: { n: number }) {
+  return (
+    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-brand-600 to-violet-500 text-xs font-bold text-white shadow-md shadow-brand-500/25">
+      {n}
+    </span>
+  );
+}
 
 type ManualRow = { id: number; mrbtsId: string; btsId: string; cellId: string; relId: string; values: Record<string, string> };
 
@@ -106,7 +137,7 @@ export default function Converter({ paramNames, paramMeta }: { paramNames: strin
   const [manualTech, setManualTech] = useState<"LTE" | "NR">("LTE");
   const [manualRows, setManualRows] = useState<ManualRow[]>([newManualRow()]);
   const [db, setDb] = useState<File[]>([]);
-  const [dbMode, setDbMode] = useState<"upload" | "link">("link");
+  const [dbMode, setDbMode] = useState<"upload" | "link">("upload");
   const [links, setLinks] = useState("");
   const [name, setName] = useState("");
   const [nameTouched, setNameTouched] = useState(false);
@@ -134,6 +165,8 @@ export default function Converter({ paramNames, paramMeta }: { paramNames: strin
     setManualRows((rs) => rs.map((r) => (r.id === id ? { ...r, values: { ...r.values, [p]: v } } : r)));
 
   const hasDb = dbMode === "link" ? links.trim().length > 0 : db.length > 0;
+  const linkEntries = links.split(/\s+/).filter(Boolean);
+  const badLinkCount = linkEntries.filter((u) => !/^https?:\/\//i.test(u)).length;
   const manualHasRow = manualRows.some(
     (r) => r.mrbtsId.trim() !== "" && r.cellId.trim() !== "" && techParams.some((p) => (r.values[p] ?? "").trim() !== ""),
   );
@@ -297,27 +330,51 @@ export default function Converter({ paramNames, paramMeta }: { paramNames: strin
     <div className="space-y-8">
       <section className="grid gap-6 md:grid-cols-2">
         <div className="surface p-5">
-          <div className="mb-3 flex items-center justify-between gap-3">
-            <p className="text-sm font-semibold text-slate-800 dark:text-slate-200">1. Planned values</p>
+          <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+            <div className="flex items-start gap-3">
+              <StepBadge n={1} />
+              <div>
+                <p className="text-sm font-semibold text-slate-800 dark:text-slate-200">Planned values</p>
+                <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+                  The values you want to apply — upload a file or type them in.
+                </p>
+              </div>
+            </div>
             <div className="segmented">
-              {(["upload", "manual"] as const).map((m) => (
-                <button
-                  key={m}
-                  type="button"
-                  onClick={() => setInputMode(m)}
-                  className={`seg-btn ${inputMode === m ? "seg-btn-active" : ""}`}
-                >
-                  {m === "upload" ? "Upload file" : "Enter values"}
-                </button>
-              ))}
+              <button
+                type="button"
+                onClick={() => setInputMode("upload")}
+                className={`seg-btn inline-flex items-center gap-1.5 ${inputMode === "upload" ? "seg-btn-active" : ""}`}
+              >
+                <SegIcon d={ICONS.upload} />
+                Upload file
+              </button>
+              <button
+                type="button"
+                onClick={() => setInputMode("manual")}
+                className={`seg-btn inline-flex items-center gap-1.5 ${inputMode === "manual" ? "seg-btn-active" : ""}`}
+              >
+                <SegIcon d={ICONS.edit} />
+                Enter values
+              </button>
             </div>
           </div>
           {inputMode === "upload" ? (
-            <DropZone label="" hint=".csv or .xlsx — planned cell parameters" accept=".csv,.xlsx,.xlsm" files={input} onChange={onInput} />
+            <DropZone
+              label=""
+              title="Drop your .csv or .xlsx here"
+              hint=".csv / .xlsx / .xlsm — one row per cell, columns are matched automatically"
+              accept=".csv,.xlsx,.xlsm"
+              files={input}
+              onChange={onInput}
+            />
           ) : (
             <div className="space-y-3">
-              <div className="flex items-center justify-between gap-3">
-                <p className="text-xs text-slate-500 dark:text-slate-400">Technology — picks the id columns (lnCelId / nrCellId)</p>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  Technology — sets the id columns (
+                  <span className="font-mono">{manualTech === "NR" ? "nrBtsId / nrCellId" : "lnBtsId / lnCelId"}</span>)
+                </p>
                 <div className="segmented">
                   {(["LTE", "NR"] as const).map((t) => (
                     <button
@@ -426,79 +483,119 @@ export default function Converter({ paramNames, paramMeta }: { paramNames: strin
           )}
         </div>
         <div className="surface p-5">
-          <div className="mb-3 flex items-center justify-between gap-3">
-            <p className="text-sm font-semibold text-slate-800 dark:text-slate-200">2. Database (optional)</p>
-          </div>
-          <div className="mb-3 inline-flex rounded-xl border border-slate-200/60 bg-slate-100/60 p-0.5 dark:border-slate-700/60 dark:bg-slate-800/40">
-            <button
-              type="button"
-              onClick={() => setDbMode("link")}
-              className={`seg-btn !px-3 !py-1 ${dbMode === "link" ? "seg-btn-active" : ""}`}
-            >
-              Link
-            </button>
-            <button
-              type="button"
-              onClick={() => setDbMode("upload")}
-              className={`seg-btn !px-3 !py-1 ${dbMode === "upload" ? "seg-btn-active" : ""}`}
-            >
-              Upload files
-            </button>
+          <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+            <div className="flex items-start gap-3">
+              <StepBadge n={2} />
+              <div>
+                <p className="flex items-center gap-2 text-sm font-semibold text-slate-800 dark:text-slate-200">
+                  Database
+                  <span className="rounded-full border border-slate-200 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-slate-400 dark:border-white/10 dark:text-slate-500">
+                    Optional
+                  </span>
+                </p>
+                <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+                  Compare against the current values of the network.
+                </p>
+              </div>
+            </div>
+            <div className="segmented">
+              <button
+                type="button"
+                onClick={() => setDbMode("upload")}
+                className={`seg-btn inline-flex items-center gap-1.5 ${dbMode === "upload" ? "seg-btn-active" : ""}`}
+              >
+                <SegIcon d={ICONS.upload} />
+                Upload files
+              </button>
+              <button
+                type="button"
+                onClick={() => setDbMode("link")}
+                className={`seg-btn inline-flex items-center gap-1.5 ${dbMode === "link" ? "seg-btn-active" : ""}`}
+              >
+                <SegIcon d={ICONS.link} />
+                Link
+              </button>
+            </div>
           </div>
           {dbMode === "upload" ? (
             <>
               <DropZone
                 label=""
+                title="Drop your database export here"
                 hint=".mdb, .accdb, .rar, .zip, .xml or .xml.gz — one or several files"
                 accept=".rar,.zip,.mdb,.accdb,.xml,.gz"
                 multiple
                 files={db}
                 onChange={setDb}
               />
-              <div className="mt-3 flex items-center justify-end">
+              <div className="mt-3 flex items-center justify-between gap-3">
+                <p className="text-xs text-slate-400 dark:text-slate-500">
+                  {db.length === 0
+                    ? "No files selected"
+                    : `${db.length} file${db.length > 1 ? "s" : ""} — ${sizeLabel(db.reduce((n, f) => n + f.size, 0))}`}
+                </p>
                 <button
                   type="button"
                   onClick={() => setDb([])}
                   disabled={db.length === 0}
-                  className="text-xs text-slate-400 transition hover:text-red-600 disabled:opacity-40 disabled:hover:text-slate-400 dark:hover:text-red-400"
+                  className="shrink-0 text-xs text-slate-400 transition hover:text-red-600 disabled:opacity-40 disabled:hover:text-slate-400 dark:hover:text-red-400"
                 >
                   Clear
                 </button>
               </div>
             </>
           ) : (
-            <textarea
-              value={links}
-              onChange={(e) => setLinks(e.target.value)}
-              rows={3}
-              spellCheck={false}
-              className="field resize-y text-sm"
-              placeholder="Paste one or more direct links to .mdb/.accdb/.rar/.zip/.xml/.xml.gz (space or line separated)"
-            />
+            <>
+              <textarea
+                value={links}
+                onChange={(e) => setLinks(e.target.value)}
+                rows={3}
+                spellCheck={false}
+                className="field resize-y font-mono text-xs"
+                placeholder={"https://example.com/Dump.rar\nPaste direct links to .mdb/.accdb/.rar/.zip/.xml/.xml.gz — one per line"}
+              />
+              <div className="mt-1.5 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-xs">
+                <span className="text-slate-400 dark:text-slate-500">
+                  {linkEntries.length === 0
+                    ? "No links yet"
+                    : `${linkEntries.length} link${linkEntries.length > 1 ? "s" : ""} detected`}
+                </span>
+                {badLinkCount > 0 && (
+                  <span className="text-amber-600 dark:text-amber-400">
+                    {badLinkCount} {badLinkCount > 1 ? "entries" : "entry"} must start with http(s)://
+                  </span>
+                )}
+              </div>
+            </>
           )}
-          <div className="mt-3 space-y-2 text-xs leading-relaxed text-slate-500 dark:text-slate-400">
+          <div className="mt-4 space-y-3 text-xs leading-relaxed text-slate-500 dark:text-slate-400">
             <p>
-              Provide the network database to compare your planned values against. The generated XML then contains
-              <span className="font-medium text-slate-700 dark:text-slate-200"> only the differences</span>, exactly like a
-              NetAct plan export.
+              The generated XML contains
+              <span className="font-medium text-slate-700 dark:text-slate-200"> only the differences</span> between your
+              planned values and this database — exactly like a NetAct plan export.
             </p>
-            <ul className="list-disc space-y-1 pl-5">
-              <li>
-                A NetAct dump: <span className="font-mono">.mdb</span> / <span className="font-mono">.accdb</span>, or a{" "}
-                <span className="font-mono">.rar</span> / <span className="font-mono">.zip</span> that contains it.
-              </li>
-              <li>
-                Or a RAML XML export from NetAct (<span className="font-mono">.xml</span>, optionally{" "}
-                <span className="font-mono">.xml.gz</span>).
-              </li>
-              <li>
-                With a link, the server downloads it (no large file upload through the hosting platform). With files,
-                several archives are unpacked automatically and only needed cells are read.
-              </li>
-              <li>Files/links are processed for this request only and are never stored on the server.</li>
-            </ul>
+            <div className="flex flex-wrap gap-1.5">
+              {[
+                ["NetAct dump", ".mdb / .accdb"],
+                ["Archive", ".rar / .zip"],
+                ["RAML export", ".xml / .xml.gz"],
+              ].map(([k, v]) => (
+                <span
+                  key={k}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white/60 px-2 py-1 dark:border-white/10 dark:bg-white/[0.03]"
+                >
+                  <span className="font-medium text-slate-600 dark:text-slate-300">{k}</span>
+                  <span className="font-mono text-[11px] text-brand-600 dark:text-brand-400">{v}</span>
+                </span>
+              ))}
+            </div>
+            <p>
+              Links are downloaded by the server, so hosting upload limits do not apply. Uploaded archives are unpacked
+              automatically and only the needed cells are read. Files are processed for this request only and are never
+              stored.
+            </p>
             <p className="text-brand-600 dark:text-brand-400">
-              Optional — leave this empty to skip the comparison and write every planned value as an update.
+              Optional — leave this empty to write every planned value as an update.
             </p>
           </div>
         </div>

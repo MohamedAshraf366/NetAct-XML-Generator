@@ -4,6 +4,7 @@ import { useRef, useState } from "react";
 
 type Props = {
   label: string;
+  title?: string;
   hint: string;
   accept: string;
   multiple?: boolean;
@@ -11,9 +12,10 @@ type Props = {
   onChange: (files: File[]) => void;
 };
 
-const size = (n: number) => (n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
+export const sizeLabel = (n: number) =>
+  n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`;
 
-export default function DropZone({ label, hint, accept, multiple, files, onChange }: Props) {
+export default function DropZone({ label, title, hint, accept, multiple, files, onChange }: Props) {
   const ref = useRef<HTMLInputElement>(null);
   const [over, setOver] = useState(false);
 
@@ -53,7 +55,7 @@ export default function DropZone({ label, hint, accept, multiple, files, onChang
           </svg>
         </span>
         <p className="text-sm text-slate-700 dark:text-slate-200">
-          Drop Your Dump.rar here or <span className="font-semibold text-brand-600 dark:text-brand-400">browse</span>
+          {title ?? "Drop your file here"} or <span className="font-semibold text-brand-600 dark:text-brand-400">browse</span>
         </p>
         <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{hint}</p>
         <input
@@ -82,7 +84,7 @@ export default function DropZone({ label, hint, accept, multiple, files, onChang
                   <path d="M14 2v6h6" />
                 </svg>
                 <span className="truncate text-slate-700 dark:text-slate-200">
-                  {f.name} <span className="text-xs text-slate-400 dark:text-slate-500">· {size(f.size)}</span>
+                  {f.name} <span className="text-xs text-slate-400 dark:text-slate-500">· {sizeLabel(f.size)}</span>
                 </span>
               </span>
               <button
