@@ -175,9 +175,32 @@ export default function Converter({ paramNames, paramMeta }: { paramNames: strin
       db.forEach((f) => fd.append("db", f));
       fd.append("name", name);
       const res = await fetch("/api/convert", { method: "POST", body: fd });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error ?? "Conversion failed.");
-      setResult(json as ConvertResponse);
+      // A large database upload can be rejected by the hosting platform (e.g. Vercel's 4.5 MB
+      // request-body limit) before the route runs, which returns plain text, not JSON.
+      const text = await res.text();
+      let json: ConvertResponse | null = null;
+      let serverError: string | null = null;
+      try {
+        const parsed: unknown = JSON.parse(text);
+        if (parsed && typeof parsed === "object" && "error" in parsed) {
+          serverError = String((parsed as { error: unknown }).error);
+        } else {
+          json = parsed as ConvertResponse;
+        }
+      } catch {
+        /* not JSON - the platform answered before the route ran */
+      }
+      if (!res.ok) {
+        if (res.status === 413) {
+          throw new Error(
+            "The database file is too large for this server to accept (the host limits uploads to 4.5 MB). " +
+              "Run the app locally, or deploy it somewhere without that request-size limit.",
+          );
+        }
+        throw new Error(serverError ?? (text.trim().slice(0, 300) || "Conversion failed."));
+      }
+      if (!json) throw new Error("The server returned an unexpected response.");
+      setResult(json);
       setEdits({});
       setQuery("");
       setFilterField("all");

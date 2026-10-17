@@ -1,0 +1,15 @@
+node_modules
+.next
+out
+.git
+.gitignore
+*.tsbuildinfo
+cached.mdb
+cached.rar
+*.test-db.xml
+samples
+scripts
+.env*
+Dockerfile
+.dockerignore
+README.md

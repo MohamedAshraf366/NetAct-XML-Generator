@@ -109,33 +109,33 @@ scripts/verify.ts   regression check (npm run verify)
 scripts/bench.ts    performance benchmark (npm run bench)
 ```
 
-## Deploying to Vercel
+## Deploying
 
-The app runs on the Node.js runtime (not Edge) because it unzips archives and reads Access (`mdb-reader`) / Excel
-buffers. The route is already configured with `export const runtime = "nodejs"` and `export const maxDuration = 300`.
+The app reads the whole database in memory (it unzips archives and parses Access via `mdb-reader`), so it must run on a
+normal Node.js server - **not** a serverless platform with a small request-body cap. A real `.mdb` / `.rar` dump is far
+larger than the **4.5 MB** limit Vercel enforces on Route Handlers/Server Actions, which it rejects before the handler
+runs (a plain-text `413`, surfaced in the UI as a "file too large" error). Deploy to Railway, Render, Fly.io, a VPS, or
+any Docker host instead.
 
-Before you push, make sure the large local artefacts never leave your machine - `.gitignore` already excludes
-`cached.mdb`, `cached.rar`, `*.test-db.xml`, `.vercel` and `.env*`.
+The included `Dockerfile` runs `next start` with the full dependency tree (safe for the `node-unrar-js` WASM and the
+`exceljs` / `mdb-reader` external packages). `.dockerignore` keeps `cached.mdb` / `cached.rar` out of the image.
 
 ```bash
-# one-off check, then deploy
-npm run typecheck && npm run verify && npm run build
-npx vercel          # preview
-npx vercel --prod   # production
+# Docker (portable)
+docker build -t netact-xml-generator .
+docker run -p 3000:3000 netact-xml-generator
+
+# or plain Node on any server / PaaS Node buildpack
+npm ci && npm run build && npm start   # honors $PORT
 ```
 
-Important limits to be aware of on **Vercel**:
+Before you push/deploy, confirm the build is clean: `npm run typecheck && npm run verify && npm run build`.
 
-- **Request body size** is capped (≈4.5 MB on Hobby, 4.5 MB–100 MB by plan). A multi-hundred-MB `.mdb` uploaded through
-  the form will be rejected before it reaches the function. For large databases run the app locally / self-hosted, or call
-  the API with a `dbUrl` link so the download happens server-side (not bound by the upload limit - but see the next point).
-- **Function timeout**: Hobby tops out at 60 s; Pro allows up to 300 s (`maxDuration` above). Loading a ~1.3 GB `.mdb`
-  in memory can exceed what a small serverless function allows.
-- **Memory**: Hobby functions have ~1 GB. Reading a very large `.mdb` fully into memory may exceed this; prefer a
-  smaller export or a self-hosted server.
+Sizing: give the container enough RAM for the biggest dump you expect (roughly several times the `.mdb` size) - e.g.
+**2–4 GB** for a ~1 GB export.
 
-For heavy real-world databases the intended deployment is a normal Node server (`npm run build && npm start`) rather
-than a serverless function.
+Vercel note: if you must use Vercel, only tiny databases work; large uploads are blocked at the platform layer and
+cannot be enabled by configuration.
 
 ## Notes
 
