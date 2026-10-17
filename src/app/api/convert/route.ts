@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { ALL_PARAM_NAMES, defaultParamNamesFor, paramsFor, type ParamDef, type Tech } from "@/lib/config";
-import { buildChanges, wantedDistNames } from "@/lib/diff";
+import { ALL_PARAM_NAMES, PARAM_ALIASES, defaultParamNamesFor, paramsFor, type ParamDef, type Tech } from "@/lib/config";
+import { buildChanges, dbParamNames, wantedDistNames } from "@/lib/diff";
 import { loadDb, type DbObject } from "@/lib/db";
 import { fetchDb } from "@/lib/fetchDb";
 import { canonicalize, readInput } from "@/lib/input";
@@ -59,7 +59,7 @@ export async function POST(req: Request) {
 
     // 1. read the CSV / Excel (recognising both LTE and NR column names)
     const parsed = await readInput(input.name, await toBuffer(input));
-    const { header, rows } = canonicalize(parsed.header, parsed.rows, [...ID_COLUMNS, ...ALL_PARAM_NAMES]);
+    const { header, rows } = canonicalize(parsed.header, parsed.rows, [...ID_COLUMNS, ...ALL_PARAM_NAMES], PARAM_ALIASES);
     for (const col of ["mrbtsId"]) {
       if (!header.includes(col)) return fail(`Column "${col}" was not found in the input file.`);
     }
@@ -117,7 +117,7 @@ export async function POST(req: Request) {
     let dbScanned = 0;
     if (sources.length > 0) {
       const wanted = wantedDistNames(rows, params, activeParamDefs);
-      const db = await loadDb(sources, wanted);
+      const db = await loadDb(sources, wanted, dbParamNames(params, activeParamDefs));
       if (db.filesRead === 0) return fail("No .xml or .mdb database files were found inside the database upload.");
       dbObjects = db.objects;
       dbFilesRead = db.filesRead;
@@ -143,7 +143,7 @@ export async function POST(req: Request) {
         dbObjectsScanned: dbScanned,
         dbObjectsMatched: dbObjects?.size ?? 0,
         changedObjects: changes.length,
-        changedValues: changes.reduce((n, c) => n + c.params.length, 0),
+        changedValues: changes.reduce((n, c) => n + c.params.filter((p) => !p.filler).length, 0),
         unchangedValues: unchanged,
       },
     };

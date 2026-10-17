@@ -11,6 +11,8 @@ import {
   type ParamDef,
 } from "./config";
 
+const PARAM_NAME_SET = new Set(PARAM_NAMES);
+
 export type DbObject = { cls: string; version: string; p: Record<string, string> };
 
 export type DbLoad = {
@@ -54,8 +56,27 @@ function attrValue(s: string, name: string): string | undefined {
   return undefined;
 }
 
-/** Parse the <p name="...">value</p> children of a managed object we actually keep. */
-function scanParams(data: Buffer, start: number, end: number, obj: DbObject) {
+const rxEscape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * Parse the `<p name="...">value</p>` children of a managed object we actually keep.
+ *
+ * When we know exactly which parameters the diff can read back (`paramRx`), a single compiled
+ * alternation extracts just those in one pass over the object; real managed objects carry hundreds
+ * of parameters of which we need a handful. `paramRx === null` keeps every parameter (used by the
+ * offline regression harness).
+ */
+function scanParams(data: Buffer, start: number, end: number, obj: DbObject, paramRx: RegExp | null) {
+  if (paramRx) {
+    const body = data.toString("utf8", start, end);
+    paramRx.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = paramRx.exec(body)) !== null) {
+      obj.p[m[1]] = decode(m[2]).trim();
+    }
+    return;
+  }
+
   let i = start;
   while (i < end) {
     const p = data.indexOf("<p", i, "latin1");
@@ -90,7 +111,7 @@ function scanParams(data: Buffer, start: number, end: number, obj: DbObject) {
  * parsing (version) and body parsing happen only for objects that survive the wanted filter, which
  * is a tiny fraction of a network export.
  */
-function scanXml(data: Buffer, wanted: Set<string>, into: DbLoad) {
+function scanXml(data: Buffer, wanted: Set<string>, wantedParams: Set<string> | null, into: DbLoad) {
   const KEY = 'distName="';
   const klen = KEY.length;
   const len = data.length;
@@ -109,6 +130,10 @@ function scanXml(data: Buffer, wanted: Set<string>, into: DbLoad) {
     hashes.add(h);
   }
 
+  const paramRx: RegExp | null = wantedParams
+    ? new RegExp(`<p name="(${Array.from(wantedParams, rxEscape).join("|")})">([^<]*)</p>`, "g")
+    : null;
+
   let p = data.indexOf(KEY, 0);
   while (p !== -1) {
     const vs = p + klen;
@@ -117,25 +142,16 @@ function scanXml(data: Buffer, wanted: Set<string>, into: DbLoad) {
     if (ve >= len) break;
 
     const next = data.indexOf(KEY, ve);
+    into.scanned++;
 
-    // One pass over the distName bytes: hash it (for the wanted lookup) and note whether it is an
-    // LTE cell (for the stat). Only the handful of objects whose hash collides is decoded, and those
-    // are re-checked against the set, so a collision can never produce a wrong match.
+    // Hash the distName in one allocation-free byte pass. Hashing every object is cheaper than any
+    // substring pre-filter (which would allocate a view and run two native searches per object);
+    // everything that cannot be wanted simply fails the hash-set lookup below and is skipped.
     let h = 0x811c9dc5;
-    let hasLncel = false;
-    let hasNrcell = false;
     for (let i = vs; i < ve; i++) {
-      const b = data[i];
-      h ^= b;
+      h ^= data[i];
       h = Math.imul(h, 0x01000193);
-      if (b === 47 && data[i + 1] === 76 && data[i + 2] === 78 && data[i + 3] === 67 && data[i + 4] === 69 && data[i + 5] === 76) {
-        hasLncel = true; // "/LNCEL"
-      }
-      if (b === 47 && data[i + 1] === 78 && data[i + 2] === 82 && data[i + 3] === 67 && data[i + 4] === 69 && data[i + 5] === 76 && data[i + 6] === 76) {
-        hasNrcell = true; // "/NRCELL"
-      }
     }
-    if (hasLncel || hasNrcell) into.scanned++;
 
     if (hashes.has(h)) {
       const dn = data.toString("utf8", vs, ve);
@@ -157,7 +173,7 @@ function scanXml(data: Buffer, wanted: Set<string>, into: DbLoad) {
           if (!selfClose) {
             const bodyStart = gt + 1;
             const bodyEnd = next === -1 ? len : data.lastIndexOf("<managedObject", next);
-            if (bodyEnd > bodyStart) scanParams(data, bodyStart, bodyEnd, obj);
+            if (bodyEnd > bodyStart) scanParams(data, bodyStart, bodyEnd, obj, paramRx);
           }
           into.objects.set(dn, obj);
         }
@@ -224,7 +240,7 @@ function scanMdb(data: Buffer, wanted: Set<string>, into: DbLoad) {
       if (idCol && !idColumn) return;
 
       const paramCols = cols.filter(
-        (c) => c !== mrbtsCol && c !== btsCol && c !== celCol && c !== idColumn && PARAM_NAMES.includes(c),
+        (c) => c !== mrbtsCol && c !== btsCol && c !== celCol && c !== idColumn && PARAM_NAME_SET.has(c),
       );
       if (paramCols.length === 0) return;
 
@@ -332,7 +348,13 @@ function scanMdb(data: Buffer, wanted: Set<string>, into: DbLoad) {
     }
   };
 
-  const wantsNr = [...wanted].some((d) => d.includes("/NRCELL-"));
+  let wantsNr = false;
+  for (const d of wanted) {
+    if (d.includes("/NRCELL-")) {
+      wantsNr = true;
+      break;
+    }
+  }
   if (wantsNr) {
     for (const t of tables) {
       if (!/NRCELL/i.test(t) || /NRADJNRCELL/i.test(t)) continue;
@@ -369,23 +391,30 @@ export function kindOf(name: string, d: Buffer): Kind {
 }
 
 /** Handles xml, mdb, gz, zip and rar - including archives nested inside archives. */
-async function ingest(name: string, data: Buffer, wanted: Set<string>, into: DbLoad, depth = 0): Promise<void> {
+async function ingest(
+  name: string,
+  data: Buffer,
+  wanted: Set<string>,
+  wantedParams: Set<string> | null,
+  into: DbLoad,
+  depth = 0,
+): Promise<void> {
   if (depth > 4) return;
   const kind = kindOf(name, data);
 
   if (kind === "xml") {
     into.filesRead++;
-    if (wanted.size > 0) scanXml(data, wanted, into);
+    if (wanted.size > 0) scanXml(data, wanted, wantedParams, into);
   } else if (kind === "mdb") {
     into.filesRead++;
     if (wanted.size > 0) scanMdb(data, wanted, into);
   } else if (kind === "gz") {
-    await ingest(name.replace(/\.gz$/i, ""), gunzipSync(data), wanted, into, depth + 1);
+    await ingest(name.replace(/\.gz$/i, ""), gunzipSync(data), wanted, wantedParams, into, depth + 1);
   } else if (kind === "zip") {
     const zip = await JSZip.loadAsync(data);
     for (const entry of Object.values(zip.files)) {
       if (entry.dir) continue;
-      await ingest(entry.name, Buffer.from(await entry.async("uint8array")), wanted, into, depth + 1);
+      await ingest(entry.name, Buffer.from(await entry.async("uint8array")), wanted, wantedParams, into, depth + 1);
     }
   } else if (kind === "rar") {
     const ab = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer;
@@ -394,7 +423,7 @@ async function ingest(name: string, data: Buffer, wanted: Set<string>, into: DbL
       const { files } = extractor.extract({ files: (h) => /\.(xml|zip|gz|rar|mdb|accdb)$/i.test(h.name) });
       for (const f of files) {
         if (f.fileHeader.flags.directory || !f.extraction) continue;
-        await ingest(f.fileHeader.name, Buffer.from(f.extraction), wanted, into, depth + 1);
+        await ingest(f.fileHeader.name, Buffer.from(f.extraction), wanted, wantedParams, into, depth + 1);
       }
     } catch (e) {
       const why = e instanceof Error ? e.message : String(e);
@@ -407,8 +436,12 @@ async function ingest(name: string, data: Buffer, wanted: Set<string>, into: DbL
   // anything else (readme, csv, ...) is ignored
 }
 
-export async function loadDb(files: { name: string; data: Buffer }[], wanted: Set<string>): Promise<DbLoad> {
+export async function loadDb(
+  files: { name: string; data: Buffer }[],
+  wanted: Set<string>,
+  wantedParams: Set<string> | null = null,
+): Promise<DbLoad> {
   const into: DbLoad = { objects: new Map(), filesRead: 0, scanned: 0 };
-  for (const f of files) await ingest(f.name, f.data, wanted, into);
+  for (const f of files) await ingest(f.name, f.data, wanted, wantedParams, into);
   return into;
 }

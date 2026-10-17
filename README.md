@@ -21,19 +21,24 @@ npm run dev        # http://localhost:3000
 | Input | Accepted |
 |-------|----------|
 | Planned values | `.csv`, `.xlsx` with `mrbtsId, lnBtsId, lnCelId` (LTE) or `mrbtsId, nrBtsId, nrCellId` (5G) plus any parameter columns (blank rows ignored) |
-| Database (optional) | leave empty to export all planned values; otherwise **a pasted link** (default) or uploaded file(s): `.mdb`, `.accdb`, `.rar`, `.zip`, `.xml`, `.xml.gz` - Access database tables (`A_LTE_MRBTS_LNBTS_LNCEL`, `LNCEL_FDD`, `LNCEL_TDD`, `LNCEL_PC`, and the 5G `NRCELL*` tables) and archives inside archives are opened automatically |
+| Database (optional) | leave empty to export all planned values; otherwise uploaded file(s): `.mdb`, `.accdb`, `.rar`, `.zip`, `.xml`, `.xml.gz` - Access database tables (`A_LTE_MRBTS_LNBTS_LNCEL`, `LNCEL_FDD`, `LNCEL_TDD`, `LNCEL_PC`, and the 5G `NRCELL*` tables) and archives inside archives are opened automatically |
 
-### Database link
+### Database upload
 
-The link is not fixed - paste a new one whenever the database changes. It is downloaded fresh on every run (the last link you
-used is remembered in the browser as a convenience).
+Upload the network database to compare against. It can be:
 
-- **Google Drive:** `…/file/d/<id>/view`, `…/open?id=<id>`, `…/uc?id=<id>` all work. The file must be shared as
-  **"Anyone with the link" (Viewer)**. Large-file "can't scan for viruses" pages are handled. Folder links are not supported.
-- **Any direct http(s) link** to a .rar / .zip / .mdb / .xml file. The format is detected from the file contents (magic bytes), so a missing or
-  wrong extension is fine. Up to 5 links (one per line) can be combined.
-- Environment variables (optional): `MAX_DB_MB` (download limit, default 1024), `ALLOW_PRIVATE_URLS=true` (allow links to
-  localhost / intranet servers - blocked by default because the download is done by the server).
+- A NetAct dump: `.mdb` / `.accdb`, or a `.rar` / `.zip` that contains it (archives inside archives are opened too).
+- A RAML XML export from NetAct (`.xml`, optionally `.xml.gz`).
+
+Several files can be uploaded at once; the format is detected from the file contents (magic bytes), so a missing or wrong
+extension is fine. Only the cells listed in the CSV are read back out of the dump, so a full-network export stays fast and
+uses little memory. Files are processed in memory for the request only and are never stored.
+
+The API also still accepts database links (`dbUrl` form field, up to 5, one per line) for scripted callers; that path is
+handled by `src/lib/fetchDb.ts` (Google Drive links, direct http(s) links, local file paths) and is covered by
+`npm run test:fetch`. Environment variables (optional): `MAX_DB_MB` (download limit, default 1024),
+`ALLOW_PRIVATE_URLS=true` (allow links to localhost / intranet servers - blocked by default because the download is done
+by the server).
 
 ## Output rules (verified against the hand-made 700, 1800 and 2600 XMLs)
 
@@ -82,6 +87,7 @@ falls back to the LTE classes (a couple of names, e.g. `angle`, exist in both bu
 npm run verify       # CSV + expected XML pairs (700/1800/2600, pci*, ho, actions and 5g)
 npm run test:fetch   # the link downloader (local imitation server: redirects, Drive warning page, private file, ...)
 npm run test:mdb     # reads the real cached.mdb if present (LTE)
+npm run bench        # synthetic large dump: times wantedDistNames / loadDb / buildChanges
 ```
 
 For every `samples/<name>.csv` with a `samples/<name>.expected.xml`, this builds a stand-in database in which exactly the
@@ -100,6 +106,7 @@ src/app/api/convert/route.ts   POST endpoint
 src/components/     UI
 samples/            700 / 1800 / 2600: CSV, hand-made expected XML, and *.test-db.xml (SYNTHETIC databases for trying the UI)
 scripts/verify.ts   regression check (npm run verify)
+scripts/bench.ts    performance benchmark (npm run bench)
 ```
 
 ## Deploying to Vercel
@@ -120,9 +127,8 @@ npx vercel --prod   # production
 Important limits to be aware of on **Vercel**:
 
 - **Request body size** is capped (≈4.5 MB on Hobby, 4.5 MB–100 MB by plan). A multi-hundred-MB `.mdb` uploaded through
-  the form will be rejected before it reaches the function. For large databases run the app locally / self-hosted, or
-  host the `.mdb` yourself and paste a direct download link (the link is fetched server-side, so it is not bound by the
-  upload limit - but see the next point).
+  the form will be rejected before it reaches the function. For large databases run the app locally / self-hosted, or call
+  the API with a `dbUrl` link so the download happens server-side (not bound by the upload limit - but see the next point).
 - **Function timeout**: Hobby tops out at 60 s; Pro allows up to 300 s (`maxDuration` above). Loading a ~1.3 GB `.mdb`
   in memory can exceed what a small serverless function allows.
 - **Memory**: Hobby functions have ~1 GB. Reading a very large `.mdb` fully into memory may exceed this; prefer a

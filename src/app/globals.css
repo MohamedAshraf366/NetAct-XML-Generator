@@ -77,6 +77,14 @@
     @apply border-white/10 bg-white/5 text-brand-400 focus:border-brand-400 focus:ring-brand-400/25;
   }
 
+  .field-cell {
+    @apply w-full min-w-[6.5rem] rounded-lg border border-slate-300 bg-white px-2 py-1 text-left text-sm text-slate-800 placeholder:text-slate-300 transition focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/15;
+  }
+
+  .dark .field-cell {
+    @apply border-white/10 bg-white/5 text-slate-200 placeholder:text-slate-600 focus:border-brand-400 focus:ring-brand-400/20;
+  }
+
   .segmented {
     @apply inline-flex items-center gap-0.5 rounded-full border border-slate-200 bg-slate-100/80 p-1 text-xs font-medium;
   }

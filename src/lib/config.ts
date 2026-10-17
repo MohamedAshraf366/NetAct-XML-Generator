@@ -88,6 +88,13 @@ export const DEFAULT_NR_PARAM_NAMES = NR_PARAM_NAMES.filter((p) => NR_PARAMS[p].
 
 export const ALL_PARAM_NAMES = Array.from(new Set([...PARAM_NAMES, ...NR_PARAM_NAMES]));
 
+/** Database / dump column spelling -> canonical parameter name, e.g. "pCA_csirsPower" -> "csirsPower". */
+export const PARAM_ALIASES: Record<string, string> = Object.fromEntries(
+  [...Object.entries(LTE_PARAMS), ...Object.entries(NR_PARAMS)]
+    .filter(([, d]) => d.dbColumn)
+    .map(([name, d]) => [d.dbColumn!.toLowerCase(), name]),
+);
+
 export function paramNamesFor(tech: Tech): string[] {
   return tech === "NR" ? NR_PARAM_NAMES : PARAM_NAMES;
 }

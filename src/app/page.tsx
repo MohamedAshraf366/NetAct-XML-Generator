@@ -1,6 +1,15 @@
 import Converter from "@/components/Converter";
 import ThemeToggle from "@/components/ThemeToggle";
-import { ALL_PARAM_NAMES, DEFAULT_NR_PARAM_NAMES, DEFAULT_PARAM_NAMES } from "@/lib/config";
+import { ALL_PARAM_NAMES, LTE_PARAMS, NR_PARAMS } from "@/lib/config";
+
+const paramMeta: Record<string, { techs: Array<"LTE" | "NR">; needsRelId: boolean }> = Object.fromEntries(
+  ALL_PARAM_NAMES.map((n) => {
+    const techs: Array<"LTE" | "NR"> = [];
+    if (n in LTE_PARAMS) techs.push("LTE");
+    if (n in NR_PARAMS) techs.push("NR");
+    return [n, { techs, needsRelId: Boolean(LTE_PARAMS[n]?.idColumn || NR_PARAMS[n]?.idColumn) }];
+  }),
+);
 
 function Logo() {
   return (
@@ -49,10 +58,7 @@ export default function Home() {
         </section>
 
         <div className="animate-fade-up [animation-delay:100ms]">
-          <Converter
-            paramNames={ALL_PARAM_NAMES}
-            defaultParams={[...DEFAULT_PARAM_NAMES, ...DEFAULT_NR_PARAM_NAMES]}
-          />
+          <Converter paramNames={ALL_PARAM_NAMES} paramMeta={paramMeta} />
         </div>
       </div>
     </>

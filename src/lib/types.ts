@@ -1,6 +1,6 @@
 export type Row = Record<string, string>;
 
-export type ParamChange = { name: string; old: string; new: string; group?: string };
+export type ParamChange = { name: string; old: string; new: string; group?: string; filler?: boolean; derived?: boolean };
 
 export type Change = {
   distName: string;

@@ -53,10 +53,17 @@ function toRows(raw: string[][]): { header: string[]; rows: Row[] } {
   return { header, rows };
 }
 
-/** Map case-insensitive header names to their canonical spelling, e.g. "MRBTSID" -> "mrbtsId". */
-export function canonicalize(header: string[], rows: Row[], canonical: string[]): { header: string[]; rows: Row[] } {
+/** Map case-insensitive header names to their canonical spelling, e.g. "MRBTSID" -> "mrbtsId".
+ *  `aliases` maps an alternative column name (e.g. the dump spelling "pCA_csirsPower") to the
+ *  canonical parameter name ("csirsPower"). */
+export function canonicalize(
+  header: string[],
+  rows: Row[],
+  canonical: string[],
+  aliases: Record<string, string> = {},
+): { header: string[]; rows: Row[] } {
   const lookup = new Map(canonical.map((c) => [c.toLowerCase(), c]));
-  const map = new Map(header.map((h) => [h, lookup.get(h.toLowerCase()) ?? h]));
+  const map = new Map(header.map((h) => [h, lookup.get(h.toLowerCase()) ?? aliases[h.toLowerCase()] ?? h]));
   return {
     header: header.map((h) => map.get(h)!),
     rows: rows.map((r) => Object.fromEntries(Object.entries(r).map(([k, v]) => [map.get(k) ?? k, v]))),

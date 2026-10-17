@@ -21,7 +21,7 @@ import {
   paramsFor,
   type ParamDef,
 } from "../src/lib/config";
-import { buildChanges, objectDistName, wantedDistNames } from "../src/lib/diff";
+import { buildChanges, dbParamNames, objectDistName, wantedDistNames } from "../src/lib/diff";
 import { loadDb } from "../src/lib/db";
 import { canonicalize, readInput } from "../src/lib/input";
 import { writeRaml } from "../src/lib/xml";
@@ -37,7 +37,12 @@ async function check(name: string, selected: string[], label: string, db: Buffer
   const parsed = await readInput(`${name}.csv`, csv);
   const { header, rows } = canonicalize(parsed.header, parsed.rows, [...ID_COLS, ...ALL_PARAM_NAMES]);
   const params = selected.filter((p) => header.includes(p));
-  const loaded = await loadDb([{ name: `${name}.test-db.xml`, data: db }], wantedDistNames(rows, params, allParams));
+  // Use the same parameter filter the app passes, so this also guards the fast XML-scan path.
+  const loaded = await loadDb(
+    [{ name: `${name}.test-db.xml`, data: db }],
+    wantedDistNames(rows, params, allParams),
+    dbParamNames(params, allParams),
+  );
   const { changes, warnings } = buildChanges(rows, params, loaded.objects, allParams);
   const planName = expected.match(/<cmData[^>]*\bname="([^"]*)"/)?.[1] ?? name;
   const out = writeRaml(changes, planName);

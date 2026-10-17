@@ -27,21 +27,23 @@ function LinkedinIcon(props: SVGProps<SVGSVGElement>) {
 
 const socials = [
   { label: "Portfolio", href: "https://portfolio-updated-tcsz.vercel.app/", Icon: GlobeIcon },
-  { label: "GitHub", href: "https://github.com/MohamedAshraf366?tab=repositories", Icon: GithubIcon },
-  { label: "LinkedIn", href: "https://www.linkedin.com/in/mohamed-ashraf-497a13170", Icon: LinkedinIcon },
+  {
+    label: "GitHub",
+    href: "https://github.com/MohamedAshraf366?tab=repositories",
+    Icon: GithubIcon,
+  },
+  {
+    label: "LinkedIn",
+    href: "https://www.linkedin.com/in/mohamed-ashraf-497a13170",
+    Icon: LinkedinIcon,
+  },
 ] as const;
 
 export default function Footer() {
   return (
-    <footer className="w-full border-t border-slate-200/80 bg-white/60 backdrop-blur-xl dark:border-white/10 dark:bg-white/[0.02]">
-      <div className="mx-auto flex max-w-6xl flex-col items-center gap-4 px-4 py-6 text-center sm:flex-row sm:justify-between sm:px-6 sm:text-left">
-        <p className="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
-          <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-gradient-to-br from-brand-600 to-violet-500 text-white shadow-lg shadow-brand-500/25">
-            <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-              <path d="M14 2v6h6M9 15l2 2 4-4" />
-            </svg>
-          </span>
+    <footer className="w-full border-t border-slate-200/80 bg-white/60 dark:border-white/10 dark:bg-white/[0.02]">
+      <div className="mx-auto flex max-w-6xl flex-col items-center gap-3 px-6 py-6 text-center sm:flex-row sm:justify-between sm:text-start">
+        <p className="text-sm text-slate-500 dark:text-slate-400">
           Built by{" "}
           <span className="bg-gradient-to-r from-brand-500 to-amber-500 bg-clip-text font-semibold text-transparent">
             Mohamed Ashraf
@@ -57,9 +59,12 @@ export default function Footer() {
               rel="noreferrer noopener"
               aria-label={label}
               title={label}
-              className="group inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white/60 px-3 py-1.5 text-xs font-medium text-slate-500 backdrop-blur-xl transition-all duration-200 hover:-translate-y-0.5 hover:border-brand-400/60 hover:bg-brand-500/10 hover:text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 dark:border-white/10 dark:bg-white/5 dark:text-slate-400 dark:hover:text-white"
+              className="group inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white/60 px-3 py-1.5 text-xs font-medium text-slate-500 transition-all duration-200 hover:-translate-y-0.5 hover:border-brand-400/60 hover:bg-brand-500/10 hover:text-slate-900 focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:outline-none dark:border-white/10 dark:bg-white/5 dark:text-slate-400 dark:hover:text-white"
             >
-              <Icon className="h-3.5 w-3.5 transition-transform duration-200 group-hover:scale-110" aria-hidden="true" />
+              <Icon
+                className="h-3.5 w-3.5 transition-transform duration-200 group-hover:scale-110"
+                aria-hidden
+              />
               {label}
             </a>
           ))}

@@ -45,6 +45,25 @@ function Stat({ label, value, icon, accent }: { label: string; value: number | s
   );
 }
 
+type ParamMeta = { techs: Array<"LTE" | "NR">; needsRelId: boolean };
+
+type ManualRow = { id: number; mrbtsId: string; btsId: string; cellId: string; relId: string; values: Record<string, string> };
+
+let rowSeq = 0;
+const newManualRow = (): ManualRow => ({ id: ++rowSeq, mrbtsId: "", btsId: "", cellId: "", relId: "", values: {} });
+
+const csvCell = (v: string) => (/[",\n\r]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
+
+type FilterField = "all" | "distName" | "param" | "old" | "new";
+
+const FILTER_PLACEHOLDERS: Record<FilterField, string> = {
+  all: "Search cell, parameter or value…",
+  distName: "Filter by distName…",
+  param: "Filter by parameter name…",
+  old: "Filter by database value…",
+  new: "Filter by new value…",
+};
+
 function CopyButton({ text }: { text: string }) {
   const [done, setDone] = useState(false);
   const copy = async () => {
@@ -78,12 +97,12 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
-export default function Converter({ paramNames, defaultParams }: { paramNames: string[]; defaultParams: string[] }) {
+export default function Converter({ paramNames, paramMeta }: { paramNames: string[]; paramMeta: Record<string, ParamMeta> }) {
   const [input, setInput] = useState<File[]>([]);
+  const [inputMode, setInputMode] = useState<"upload" | "manual">("upload");
+  const [manualTech, setManualTech] = useState<"LTE" | "NR">("LTE");
+  const [manualRows, setManualRows] = useState<ManualRow[]>([newManualRow()]);
   const [db, setDb] = useState<File[]>([]);
-  const [dbMode, setDbMode] = useState<"link" | "upload">("link");
-  const [links, setLinks] = useState("");
-  const [params, setParams] = useState<string[]>(defaultParams);
   const [name, setName] = useState("");
   const [nameTouched, setNameTouched] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -92,15 +111,54 @@ export default function Converter({ paramNames, defaultParams }: { paramNames: s
   const [view, setView] = useState<"table" | "xml">("table");
   const [edits, setEdits] = useState<Record<string, string>>({});
   const [query, setQuery] = useState("");
+  const [filterField, setFilterField] = useState<FilterField>("all");
 
   const onInput = (files: File[]) => {
     setInput(files);
     if (files[0] && !nameTouched) setName(stem(files[0].name));
   };
 
-  const toggle = (p: string) => setParams((cur) => (cur.includes(p) ? cur.filter((x) => x !== p) : [...cur, p]));
-  const hasDb = dbMode === "link" ? links.trim().length > 0 : db.length > 0;
-  const canRun = input.length > 0 && params.length > 0 && !busy;
+  const techParams = useMemo(
+    () => paramNames.filter((p) => paramMeta[p]?.techs.includes(manualTech)),
+    [paramNames, paramMeta, manualTech],
+  );
+  const needsRel = useMemo(() => techParams.some((p) => paramMeta[p]?.needsRelId), [techParams, paramMeta]);
+
+  const setRow = (id: number, patch: Partial<ManualRow>) =>
+    setManualRows((rs) => rs.map((r) => (r.id === id ? { ...r, ...patch } : r)));
+  const setRowValue = (id: number, p: string, v: string) =>
+    setManualRows((rs) => rs.map((r) => (r.id === id ? { ...r, values: { ...r.values, [p]: v } } : r)));
+
+  const hasDb = db.length > 0;
+  const manualHasRow = manualRows.some(
+    (r) => r.mrbtsId.trim() !== "" && r.cellId.trim() !== "" && techParams.some((p) => (r.values[p] ?? "").trim() !== ""),
+  );
+  const canRun = (inputMode === "upload" ? input.length > 0 : manualHasRow) && !busy;
+
+  function manualCsv(): string {
+    const ids = manualTech === "NR" ? ["mrbtsId", "nrBtsId", "nrCellId"] : ["mrbtsId", "lnBtsId", "lnCelId"];
+    const header = [...ids, ...(needsRel ? ["lnRelId"] : []), ...techParams];
+    const lines = [header.join(",")];
+    manualRows.forEach((r, idx) => {
+      if (!techParams.some((p) => (r.values[p] ?? "").trim())) return; // rows without values are ignored
+      if (r.mrbtsId.trim() === "" || r.cellId.trim() === "") {
+        throw new Error(`Manual values: row ${idx + 1} needs an mrbtsId and a cell id.`);
+      }
+      lines.push(
+        [
+          r.mrbtsId.trim(),
+          r.btsId.trim(),
+          r.cellId.trim(),
+          ...(needsRel ? [r.relId.trim()] : []),
+          ...techParams.map((p) => (r.values[p] ?? "").trim()),
+        ]
+          .map(csvCell)
+          .join(","),
+      );
+    });
+    if (lines.length === 1) throw new Error("Manual values: enter a value in at least one row.");
+    return lines.join("\r\n");
+  }
 
   async function run() {
     setBusy(true);
@@ -108,13 +166,13 @@ export default function Converter({ paramNames, defaultParams }: { paramNames: s
     setResult(null);
     try {
       const fd = new FormData();
-      fd.append("input", input[0]);
-      if (dbMode === "link") {
-        fd.append("dbUrl", links);
+      if (inputMode === "upload") {
+        fd.append("input", input[0]);
       } else {
-        db.forEach((f) => fd.append("db", f));
+        fd.append("input", new File([manualCsv()], "manual-values.csv", { type: "text/csv" }));
+        techParams.forEach((p) => fd.append("params", p));
       }
-      params.forEach((p) => fd.append("params", p));
+      db.forEach((f) => fd.append("db", f));
       fd.append("name", name);
       const res = await fetch("/api/convert", { method: "POST", body: fd });
       const json = await res.json();
@@ -122,6 +180,7 @@ export default function Converter({ paramNames, defaultParams }: { paramNames: s
       setResult(json as ConvertResponse);
       setEdits({});
       setQuery("");
+      setFilterField("all");
       setView("table");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Something went wrong.");
@@ -154,15 +213,30 @@ export default function Converter({ paramNames, defaultParams }: { paramNames: s
   const visibleChanges = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return effectiveChanges;
-    return effectiveChanges.filter(
-      (c) =>
+    const out: Change[] = [];
+    for (const c of effectiveChanges) {
+      if (filterField === "distName") {
+        if (c.distName.toLowerCase().includes(q)) out.push(c);
+        continue;
+      }
+      if (filterField === "param" || filterField === "old" || filterField === "new") {
+        // Keep only the parameter rows that match, so the table shows exactly what the filter found.
+        const params = c.params.filter((p) =>
+          (filterField === "param" ? p.name : filterField === "old" ? p.old : p.new).toLowerCase().includes(q),
+        );
+        if (params.length > 0) out.push({ ...c, params });
+        continue;
+      }
+      if (
         c.distName.toLowerCase().includes(q) ||
         c.cls.toLowerCase().includes(q) ||
-        c.params.some(
-          (p) => p.name.toLowerCase().includes(q) || p.new.toLowerCase().includes(q) || p.old.toLowerCase().includes(q),
-        ),
-    );
-  }, [effectiveChanges, query]);
+        c.params.some((p) => p.name.toLowerCase().includes(q) || p.new.toLowerCase().includes(q) || p.old.toLowerCase().includes(q))
+      ) {
+        out.push(c);
+      }
+    }
+    return out;
+  }, [effectiveChanges, query, filterField]);
 
   const hasEdits = Object.keys(edits).length > 0;
 
@@ -185,88 +259,199 @@ export default function Converter({ paramNames, defaultParams }: { paramNames: s
     <div className="space-y-8">
       <section className="grid gap-6 md:grid-cols-2">
         <div className="surface p-5">
-          <DropZone label="1. Planned values" hint=".csv or .xlsx" accept=".csv,.xlsx,.xlsm" files={input} onChange={onInput} />
-        </div>
-        <div className="surface p-5">
           <div className="mb-3 flex items-center justify-between gap-3">
-            <p className="text-sm font-semibold text-slate-800 dark:text-slate-200">2. Database</p>
+            <p className="text-sm font-semibold text-slate-800 dark:text-slate-200">1. Planned values</p>
             <div className="segmented">
-              {(["link", "upload"] as const).map((m) => (
+              {(["upload", "manual"] as const).map((m) => (
                 <button
                   key={m}
                   type="button"
-                  onClick={() => setDbMode(m)}
-                  className={`seg-btn ${dbMode === m ? "seg-btn-active" : ""}`}
+                  onClick={() => setInputMode(m)}
+                  className={`seg-btn ${inputMode === m ? "seg-btn-active" : ""}`}
                 >
-                  {m === "link" ? "Paste link" : "Upload file"}
+                  {m === "upload" ? "Upload file" : "Enter values"}
                 </button>
               ))}
             </div>
           </div>
-          {dbMode === "link" ? (
-            <div>
-              <textarea
-                value={links}
-                onChange={(e) => setLinks(e.target.value)}
-                rows={3}
-                spellCheck={false}
-                placeholder="The link for updated Dump"
-                className="field resize-y font-mono text-xs"
-              />
-              <p className="mt-2 text-xs leading-relaxed text-slate-500 dark:text-slate-400">
-                Google Drive link (shared as “Anyone with the link”) or a direct link to a .rar / .zip / .mdb / .xml file. Use a new
-                link any time - it is downloaded fresh on every run. One link per line.
-              </p>
-              {!hasDb && (
-                <p className="mt-2 text-xs leading-relaxed text-brand-600 dark:text-brand-400">
-                  Optional — leave this empty to skip the comparison and write every planned value as an update.
-                </p>
-              )}
-            </div>
+          {inputMode === "upload" ? (
+            <DropZone label="" hint=".csv or .xlsx — planned cell parameters" accept=".csv,.xlsx,.xlsm" files={input} onChange={onInput} />
           ) : (
-            <DropZone
-              label=""
-              hint=".rar, .zip, .mdb, .accdb, .xml or .xml.gz — one or several files"
-              accept=".rar,.zip,.mdb,.accdb,.xml,.gz"
-              multiple
-              files={db}
-              onChange={setDb}
-            />
+            <div className="space-y-3">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-xs text-slate-500 dark:text-slate-400">Technology — picks the id columns (lnCelId / nrCellId)</p>
+                <div className="segmented">
+                  {(["LTE", "NR"] as const).map((t) => (
+                    <button
+                      key={t}
+                      type="button"
+                      onClick={() => setManualTech(t)}
+                      className={`seg-btn ${manualTech === t ? "seg-btn-active" : ""}`}
+                    >
+                      {t}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-white/10">
+                <table className="w-full text-left text-sm">
+                  <thead className="border-b border-slate-200 bg-slate-50/80 text-xs uppercase tracking-wide text-slate-500 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-400">
+                    <tr>
+                      <th className="px-2 py-2 font-medium">mrbtsId</th>
+                      <th className="px-2 py-2 font-medium">{manualTech === "NR" ? "nrBtsId" : "lnBtsId"}</th>
+                      <th className="px-2 py-2 font-medium">{manualTech === "NR" ? "nrCellId" : "lnCelId"}</th>
+                      {needsRel && <th className="px-2 py-2 font-medium">lnRelId</th>}
+                      {techParams.map((p) => (
+                        <th key={p} className="px-2 py-2 font-medium">{p}</th>
+                      ))}
+                      <th className="w-8" />
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-white/5">
+                    {manualRows.map((r, idx) => (
+                      <tr key={r.id} className="transition hover:bg-slate-50/70 dark:hover:bg-white/[0.03]">
+                        <td className="px-2 py-1.5">
+                          <input
+                            value={r.mrbtsId}
+                            onChange={(e) => setRow(r.id, { mrbtsId: e.target.value })}
+                            placeholder="419852"
+                            className="field-cell"
+                            aria-label={`mrbtsId, row ${idx + 1}`}
+                          />
+                        </td>
+                        <td className="px-2 py-1.5">
+                          <input
+                            value={r.btsId}
+                            onChange={(e) => setRow(r.id, { btsId: e.target.value })}
+                            placeholder="= mrbtsId"
+                            className="field-cell"
+                            aria-label={`BTS id, row ${idx + 1}`}
+                          />
+                        </td>
+                        <td className="px-2 py-1.5">
+                          <input
+                            value={r.cellId}
+                            onChange={(e) => setRow(r.id, { cellId: e.target.value })}
+                            placeholder="101"
+                            className="field-cell"
+                            aria-label={`Cell id, row ${idx + 1}`}
+                          />
+                        </td>
+                        {needsRel && (
+                          <td className="px-2 py-1.5">
+                            <input
+                              value={r.relId}
+                              onChange={(e) => setRow(r.id, { relId: e.target.value })}
+                              placeholder="361"
+                              className="field-cell"
+                              aria-label={`lnRelId, row ${idx + 1}`}
+                            />
+                          </td>
+                        )}
+                        {techParams.map((p) => (
+                          <td key={p} className="px-2 py-1.5">
+                            <input
+                              value={r.values[p] ?? ""}
+                              onChange={(e) => setRowValue(r.id, p, e.target.value)}
+                              spellCheck={false}
+                              className="field-inline"
+                              aria-label={`${p}, row ${idx + 1}`}
+                            />
+                          </td>
+                        ))}
+                        <td className="px-2 py-1.5 text-right">
+                          <button
+                            type="button"
+                            onClick={() => setManualRows((rs) => rs.filter((x) => x.id !== r.id))}
+                            className="rounded-lg px-2 py-1 text-xs text-slate-400 transition hover:bg-red-500/10 hover:text-red-600 dark:hover:text-red-400"
+                            aria-label={`Remove row ${idx + 1}`}
+                          >
+                            ✕
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <button type="button" onClick={() => setManualRows((rs) => [...rs, newManualRow()])} className="btn-ghost !px-3 !py-1.5 text-xs">
+                  + Add row
+                </button>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  Rows without values are ignored — leave btsId empty when it equals mrbtsId.
+                </p>
+              </div>
+            </div>
           )}
+        </div>
+        <div className="surface p-5">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <p className="text-sm font-semibold text-slate-800 dark:text-slate-200">2. Database (optional)</p>
+            <button
+              type="button"
+              onClick={() => setDb([])}
+              disabled={db.length === 0}
+              className="text-xs text-slate-400 transition hover:text-red-600 disabled:opacity-40 disabled:hover:text-slate-400 dark:hover:text-red-400"
+            >
+              Clear
+            </button>
+          </div>
+          <DropZone
+            label=""
+            hint=".mdb, .accdb, .rar, .zip, .xml or .xml.gz — one or several files"
+            accept=".rar,.zip,.mdb,.accdb,.xml,.gz"
+            multiple
+            files={db}
+            onChange={setDb}
+          />
+          <div className="mt-3 space-y-2 text-xs leading-relaxed text-slate-500 dark:text-slate-400">
+            <p>
+              Upload the network database to compare your planned values against. The generated XML then contains
+              <span className="font-medium text-slate-700 dark:text-slate-200"> only the differences</span>, exactly like a
+              NetAct plan export.
+            </p>
+            <ul className="list-disc space-y-1 pl-5">
+              <li>
+                A NetAct dump: <span className="font-mono">.mdb</span> / <span className="font-mono">.accdb</span>, or a{" "}
+                <span className="font-mono">.rar</span> / <span className="font-mono">.zip</span> that contains it.
+              </li>
+              <li>
+                Or a RAML XML export from NetAct (<span className="font-mono">.xml</span>, optionally{" "}
+                <span className="font-mono">.xml.gz</span>).
+              </li>
+              <li>
+                Several files are unpacked automatically. Only the cells listed in your CSV are read, so a full-network dump
+                stays fast and small in memory.
+              </li>
+              <li>Files are processed for this request only and are never stored on the server.</li>
+            </ul>
+            <p className="text-brand-600 dark:text-brand-400">
+              Optional — leave this empty to skip the comparison and write every planned value as an update.
+            </p>
+          </div>
         </div>
       </section>
 
       <section className="surface grid gap-6 p-5 md:grid-cols-[1fr_auto] md:items-end">
-        <div className="grid gap-5 sm:grid-cols-2">
-          <div>
-            <p className="mb-1.5 text-sm font-semibold text-slate-800 dark:text-slate-200">Parameters to compare</p>
-            <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">Columns that are not in your file are ignored automatically.</p>
-            <div className="flex flex-wrap gap-2">
-              {paramNames.map((p) => (
-                <label key={p} className={`chip ${params.includes(p) ? "chip-on" : "chip-off"}`}>
-                  <input type="checkbox" className="sr-only" checked={params.includes(p)} onChange={() => toggle(p)} />
-                  {p}
-                </label>
-              ))}
-            </div>
-          </div>
-          <div>
-            <label htmlFor="name" className="mb-1.5 block text-sm font-semibold text-slate-800 dark:text-slate-200">
-              Plan name (output file)
-            </label>
-            <div className="flex items-center gap-2">
-              <input
-                id="name"
-                value={name}
-                onChange={(e) => {
-                  setName(e.target.value);
-                  setNameTouched(true);
-                }}
-                placeholder="700"
-                className="field text-sm"
-              />
-              <span className="text-sm text-slate-500 dark:text-slate-400">.xml</span>
-            </div>
+        <div className="max-w-sm">
+          <label htmlFor="name" className="mb-1.5 block text-sm font-semibold text-slate-800 dark:text-slate-200">
+            Plan name (output file)
+          </label>
+          <div className="flex items-center gap-2">
+            <input
+              id="name"
+              value={name}
+              onChange={(e) => {
+                setName(e.target.value);
+                setNameTouched(true);
+              }}
+              placeholder="700"
+              className="field text-sm"
+            />
+            <span className="text-sm text-slate-500 dark:text-slate-400">.xml</span>
           </div>
         </div>
         <button onClick={run} disabled={!canRun} className="btn-primary w-full md:w-auto">
@@ -276,7 +461,7 @@ export default function Converter({ paramNames, defaultParams }: { paramNames: s
                 <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" className="opacity-25" />
                 <path d="M12 2a10 10 0 0 1 10 10" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
               </svg>
-              {dbMode === "link" ? "Downloading & comparing…" : "Comparing…"}
+              {hasDb ? "Comparing…" : "Generating…"}
             </>
           ) : (
             <>
@@ -305,9 +490,7 @@ export default function Converter({ paramNames, defaultParams }: { paramNames: s
             <p className="min-w-0 flex-1 truncate">
               Database:{" "}
               <span className="text-slate-600 dark:text-slate-300">
-                {result.dbSources
-                  .map((d) => `${d.name} (${(d.bytes / 1048576).toFixed(1)} MB, ${d.from === "link" ? "from link" : "uploaded"})`)
-                  .join(", ")}
+                {result.dbSources.map((d) => `${d.name} (${(d.bytes / 1048576).toFixed(1)} MB)`).join(", ")}
               </span>
             </p>
           </div>
@@ -357,11 +540,23 @@ export default function Converter({ paramNames, defaultParams }: { paramNames: s
                 <input
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
-                  placeholder="Search cell, parameter or value…"
+                  placeholder={FILTER_PLACEHOLDERS[filterField]}
                   spellCheck={false}
-                  className="field pl-9 text-sm"
-                  aria-label="Search cells"
+                  className="field pl-9 pr-28 text-sm"
+                  aria-label="Filter changes"
                 />
+                <select
+                  value={filterField}
+                  onChange={(e) => setFilterField(e.target.value as FilterField)}
+                  className="absolute right-1.5 top-1/2 -translate-y-1/2 cursor-pointer rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs font-medium text-slate-600 transition hover:border-brand-400 focus:outline-none focus:ring-2 focus:ring-brand-500/20 dark:border-white/10 dark:bg-white/5 dark:text-slate-300"
+                  aria-label="Filter field"
+                >
+                  <option value="all">All</option>
+                  <option value="distName">distName</option>
+                  <option value="param">Parameter</option>
+                  <option value="old">Database</option>
+                  <option value="new">New value</option>
+                </select>
               </div>
             )}
 
@@ -423,7 +618,13 @@ export default function Converter({ paramNames, defaultParams }: { paramNames: s
                               value={edited ? edits[k] : p.new}
                               onChange={(e) => setEdits((prev) => ({ ...prev, [k]: e.target.value }))}
                               spellCheck={false}
-                              title="Edit this value"
+                              title={
+                                p.filler
+                                  ? "Unchanged — kept from the database so the whole list is written"
+                                  : p.derived
+                                    ? "Set automatically: csirsPower − 3"
+                                    : "Edit this value"
+                              }
                               aria-label={`Value for ${p.name} on ${c.distName}`}
                               className={`field-inline ${edited ? "ring-2 ring-amber-400/70" : ""}`}
                             />
