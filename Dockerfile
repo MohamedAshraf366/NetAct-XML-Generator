@@ -21,4 +21,4 @@ COPY --from=build /app/next.config.mjs ./next.config.mjs
 EXPOSE 3000
 # Bind to all interfaces so the platform's proxy can reach the server.
 ENV HOSTNAME=0.0.0.0
-CMD ["npm", "start"]
+CMD ["sh", "-c", "npx next start -H 0.0.0.0 -p ${PORT:-3000}"]

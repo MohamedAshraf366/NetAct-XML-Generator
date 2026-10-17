@@ -103,6 +103,8 @@ export default function Converter({ paramNames, paramMeta }: { paramNames: strin
   const [manualTech, setManualTech] = useState<"LTE" | "NR">("LTE");
   const [manualRows, setManualRows] = useState<ManualRow[]>([newManualRow()]);
   const [db, setDb] = useState<File[]>([]);
+  const [dbMode, setDbMode] = useState<"upload" | "link">("link");
+  const [links, setLinks] = useState("");
   const [name, setName] = useState("");
   const [nameTouched, setNameTouched] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -129,7 +131,7 @@ export default function Converter({ paramNames, paramMeta }: { paramNames: strin
   const setRowValue = (id: number, p: string, v: string) =>
     setManualRows((rs) => rs.map((r) => (r.id === id ? { ...r, values: { ...r.values, [p]: v } } : r)));
 
-  const hasDb = db.length > 0;
+  const hasDb = dbMode === "link" ? links.trim().length > 0 : db.length > 0;
   const manualHasRow = manualRows.some(
     (r) => r.mrbtsId.trim() !== "" && r.cellId.trim() !== "" && techParams.some((p) => (r.values[p] ?? "").trim() !== ""),
   );
@@ -172,7 +174,12 @@ export default function Converter({ paramNames, paramMeta }: { paramNames: strin
         fd.append("input", new File([manualCsv()], "manual-values.csv", { type: "text/csv" }));
         techParams.forEach((p) => fd.append("params", p));
       }
-      db.forEach((f) => fd.append("db", f));
+      if (dbMode === "link") {
+        const parts = links.split(/\s+/).map((s) => s.trim()).filter(Boolean);
+        parts.forEach((url) => fd.append("dbUrl", url));
+      } else {
+        db.forEach((f) => fd.append("db", f));
+      }
       fd.append("name", name);
       const res = await fetch("/api/convert", { method: "POST", body: fd });
       // A large database upload can be rejected by the hosting platform (e.g. Vercel's 4.5 MB
@@ -413,26 +420,57 @@ export default function Converter({ paramNames, paramMeta }: { paramNames: strin
         <div className="surface p-5">
           <div className="mb-3 flex items-center justify-between gap-3">
             <p className="text-sm font-semibold text-slate-800 dark:text-slate-200">2. Database (optional)</p>
+          </div>
+          <div className="mb-3 inline-flex rounded-xl border border-slate-200/60 bg-slate-100/60 p-0.5 dark:border-slate-700/60 dark:bg-slate-800/40">
             <button
               type="button"
-              onClick={() => setDb([])}
-              disabled={db.length === 0}
-              className="text-xs text-slate-400 transition hover:text-red-600 disabled:opacity-40 disabled:hover:text-slate-400 dark:hover:text-red-400"
+              onClick={() => setDbMode("link")}
+              className={`seg-btn !px-3 !py-1 ${dbMode === "link" ? "seg-btn-active" : ""}`}
             >
-              Clear
+              Link
+            </button>
+            <button
+              type="button"
+              onClick={() => setDbMode("upload")}
+              className={`seg-btn !px-3 !py-1 ${dbMode === "upload" ? "seg-btn-active" : ""}`}
+            >
+              Upload files
             </button>
           </div>
-          <DropZone
-            label=""
-            hint=".mdb, .accdb, .rar, .zip, .xml or .xml.gz — one or several files"
-            accept=".rar,.zip,.mdb,.accdb,.xml,.gz"
-            multiple
-            files={db}
-            onChange={setDb}
-          />
+          {dbMode === "upload" ? (
+            <>
+              <DropZone
+                label=""
+                hint=".mdb, .accdb, .rar, .zip, .xml or .xml.gz — one or several files"
+                accept=".rar,.zip,.mdb,.accdb,.xml,.gz"
+                multiple
+                files={db}
+                onChange={setDb}
+              />
+              <div className="mt-3 flex items-center justify-end">
+                <button
+                  type="button"
+                  onClick={() => setDb([])}
+                  disabled={db.length === 0}
+                  className="text-xs text-slate-400 transition hover:text-red-600 disabled:opacity-40 disabled:hover:text-slate-400 dark:hover:text-red-400"
+                >
+                  Clear
+                </button>
+              </div>
+            </>
+          ) : (
+            <textarea
+              value={links}
+              onChange={(e) => setLinks(e.target.value)}
+              rows={3}
+              spellCheck={false}
+              className="field resize-y text-sm"
+              placeholder="Paste one or more direct links to .mdb/.accdb/.rar/.zip/.xml/.xml.gz (space or line separated)"
+            />
+          )}
           <div className="mt-3 space-y-2 text-xs leading-relaxed text-slate-500 dark:text-slate-400">
             <p>
-              Upload the network database to compare your planned values against. The generated XML then contains
+              Provide the network database to compare your planned values against. The generated XML then contains
               <span className="font-medium text-slate-700 dark:text-slate-200"> only the differences</span>, exactly like a
               NetAct plan export.
             </p>
@@ -446,10 +484,10 @@ export default function Converter({ paramNames, paramMeta }: { paramNames: strin
                 <span className="font-mono">.xml.gz</span>).
               </li>
               <li>
-                Several files are unpacked automatically. Only the cells listed in your CSV are read, so a full-network dump
-                stays fast and small in memory.
+                With a link, the server downloads it (no large file upload through the hosting platform). With files,
+                several archives are unpacked automatically and only needed cells are read.
               </li>
-              <li>Files are processed for this request only and are never stored on the server.</li>
+              <li>Files/links are processed for this request only and are never stored on the server.</li>
             </ul>
             <p className="text-brand-600 dark:text-brand-400">
               Optional — leave this empty to skip the comparison and write every planned value as an update.
