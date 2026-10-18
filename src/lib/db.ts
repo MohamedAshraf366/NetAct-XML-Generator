@@ -1,6 +1,7 @@
 import MDBReader from "mdb-reader";
 import { DEFAULT_NR_VERSION, DEFAULT_VERSION, NR_PARAMS, PARAM_NAMES } from "./config";
 import { ingest, kindOf, type DbSinks } from "./archive";
+import { releaseMemory } from "./mem";
 import { makeScanSink, parseXmlStream, attrValue, type DbLoad, type DbObject, type XmlTagSink } from "./xmlscan";
 
 export { kindOf, parseXmlStream, attrValue };
@@ -213,6 +214,9 @@ export async function loadDb(
     },
   };
 
-  for (const f of files) await ingest(f.name, f.data, sinks, 0, f.path);
+  for (const f of files) {
+    await ingest(f.name, f.data, sinks, 0, f.path);
+    releaseMemory(); // one scan's buffers shouldn't stack onto the next file
+  }
   return into;
 }

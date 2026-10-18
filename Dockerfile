@@ -35,4 +35,4 @@ COPY --from=build /app/next.config.mjs ./next.config.mjs
 EXPOSE 3000
 # Bind to all interfaces so the platform's proxy can reach the server.
 ENV HOSTNAME=0.0.0.0
-CMD ["sh", "-c", "exec ./node_modules/.bin/next start -H 0.0.0.0 -p ${PORT:-3000}"]
+CMD ["sh", "-c", "exec node --expose-gc node_modules/next/dist/bin/next start -H 0.0.0.0 -p ${PORT:-3000}"]

@@ -4,6 +4,7 @@ import { buildChanges, dbParamNames, wantedDistNames } from "@/lib/diff";
 import { loadDb, type DbObject } from "@/lib/db";
 import { fetchDb } from "@/lib/fetchDb";
 import { canonicalize, readInput } from "@/lib/input";
+import { releaseMemorySoon } from "@/lib/mem";
 import type { ConvertResponse, DbSource } from "@/lib/types";
 import { writeRaml } from "@/lib/xml";
 
@@ -151,5 +152,7 @@ export async function POST(req: Request) {
   } catch (e) {
     console.error(e);
     return fail(e instanceof Error ? e.message : "Conversion failed.", 500);
+  } finally {
+    releaseMemorySoon();
   }
 }

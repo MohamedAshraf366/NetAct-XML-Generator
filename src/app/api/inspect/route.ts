@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { fetchDb } from "@/lib/fetchDb";
 import { ingest } from "@/lib/archive";
 import { inspectXmlStream } from "@/lib/xmlscan";
+import { releaseMemorySoon } from "@/lib/mem";
 import { NR_PARAMS, PARAM_NAMES, PARAMS } from "@/lib/config";
 import MDBReader from "mdb-reader";
 
@@ -184,5 +185,7 @@ export async function POST(req: Request) {
   } catch (e) {
     console.error("Inspection error:", e);
     return fail(e instanceof Error ? e.message : "Inspection failed.", 500);
+  } finally {
+    releaseMemorySoon();
   }
 }

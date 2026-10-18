@@ -162,6 +162,11 @@ Sizing: give the service **4 GB+ RAM**. The mdb path holds the unpacked `.mdb` p
 Uploaded archives are staged in `/tmp` while streaming (`NETACT_TMP_DIR` overrides the location), so keep about the
 compressed download size of ephemeral disk free.
 
+Memory is also released explicitly: the `dev`/`start` scripts and the image run Node with `--expose-gc`, and each
+conversion/inspection collects its buffers right after the response (plus between database files), with a periodic
+sweep every 5 minutes. Measured in the container: idle RSS drops back to ~180 MB within seconds after even the
+1.3 GB-mdb and 3 GB-XML jobs; without it the process kept ~1.5 GB resident until the next natural collection.
+
 Vercel note: if you must use Vercel, only tiny databases work; large uploads are blocked at the platform layer and
 cannot be enabled by configuration.
 
