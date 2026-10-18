@@ -1,10 +1,8 @@
 import { NextResponse } from "next/server";
 import { fetchDb } from "@/lib/fetchDb";
-import { kindOf } from "@/lib/db";
+import { ingest } from "@/lib/archive";
+import { inspectXmlStream } from "@/lib/xmlscan";
 import { NR_PARAMS, PARAM_NAMES, PARAMS } from "@/lib/config";
-import JSZip from "jszip";
-import { gunzipSync } from "node:zlib";
-import { createExtractorFromData } from "node-unrar-js";
 import MDBReader from "mdb-reader";
 
 export const runtime = "nodejs";
@@ -111,20 +109,19 @@ function inspectMdb(data: Buffer, sourceName: string): DatabaseInspection {
   };
 }
 
-function inspectXml(xmlText: string, sourceName: string, bytes: number): DatabaseInspection {
-  const classesFound = new Set<string>();
-  let count = 0;
-  for (const m of xmlText.matchAll(/<managedObject\b[^>]*\bclass="([^"]+)"/g)) {
-    classesFound.add(m[1]);
-    count++;
-  }
-  const paramsFound = new Set<string>();
-  for (const m of xmlText.matchAll(/<p\b[^>]*\bname="([^"]+)"/g)) {
-    paramsFound.add(m[1]);
-  }
+/**
+ * Inspect a RAML document from its byte stream - a multi-GB export is walked chunk by chunk and
+ * never held in memory.
+ */
+async function inspectXml(
+  source: AsyncIterable<Buffer | Uint8Array>,
+  sourceName: string,
+  bytes: number,
+): Promise<DatabaseInspection> {
+  const found = await inspectXmlStream(source);
 
   const detectedParameters: { name: string; moClass: string; table: string }[] = [];
-  for (const p of paramsFound) {
+  for (const p of found.params) {
     if (p in PARAMS) detectedParameters.push({ name: p, moClass: PARAMS[p].cls, table: "RAML XML" });
     else if (p in NR_PARAMS) detectedParameters.push({ name: p, moClass: NR_PARAMS[p].cls, table: "RAML XML" });
   }
@@ -133,43 +130,22 @@ function inspectXml(xmlText: string, sourceName: string, bytes: number): Databas
     sourceName,
     kind: "xml",
     bytes,
-    xmlObjectsScanned: count,
-    xmlClassesFound: [...classesFound],
+    xmlObjectsScanned: found.objectsScanned,
+    xmlClassesFound: found.classes,
     detectedParameters,
   };
 }
 
-async function inspectBuffer(name: string, data: Buffer, depth = 0): Promise<DatabaseInspection[]> {
-  if (depth > 4) return [];
-  const kind = kindOf(name, data);
+async function inspectBuffer(name: string, data: Buffer): Promise<DatabaseInspection[]> {
   const results: DatabaseInspection[] = [];
-
-  if (kind === "mdb") {
-    results.push(inspectMdb(data, name));
-  } else if (kind === "xml") {
-    results.push(inspectXml(data.toString("utf8"), name, data.length));
-  } else if (kind === "gz") {
-    return inspectBuffer(name.replace(/\.gz$/i, ""), gunzipSync(data), depth + 1);
-  } else if (kind === "zip") {
-    const zip = await JSZip.loadAsync(data);
-    for (const entry of Object.values(zip.files)) {
-      if (entry.dir) continue;
-      const subData = Buffer.from(await entry.async("uint8array"));
-      const subs = await inspectBuffer(entry.name, subData, depth + 1);
-      results.push(...subs);
-    }
-  } else if (kind === "rar") {
-    const ab = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer;
-    const extractor = await createExtractorFromData({ data: ab });
-    const { files } = extractor.extract({ files: (h) => /\.(xml|zip|gz|rar|mdb|accdb)$/i.test(h.name) });
-    for (const f of files) {
-      if (f.fileHeader.flags.directory || !f.extraction) continue;
-      const subData = Buffer.from(f.extraction);
-      const subs = await inspectBuffer(f.fileHeader.name, subData, depth + 1);
-      results.push(...subs);
-    }
-  }
-
+  await ingest(name, data, {
+    xml: async (source, sourceName, bytes) => {
+      results.push(await inspectXml(source, sourceName, bytes));
+    },
+    mdb: (mdbData, mdbName) => {
+      results.push(inspectMdb(mdbData, mdbName));
+    },
+  });
   return results;
 }
 

@@ -1,187 +1,13 @@
-import JSZip from "jszip";
-import { gunzipSync } from "node:zlib";
-import { createExtractorFromData } from "node-unrar-js";
 import MDBReader from "mdb-reader";
-import {
-  DEFAULT_NR_VERSION,
-  DEFAULT_VERSION,
-  NR_PARAMS,
-  PARAM_NAMES,
-  paramNamesFor,
-  type ParamDef,
-} from "./config";
+import { DEFAULT_NR_VERSION, DEFAULT_VERSION, NR_PARAMS, PARAM_NAMES } from "./config";
+import { ingest, kindOf, type DbSinks } from "./archive";
+import { makeScanSink, parseXmlStream, attrValue, type DbLoad, type DbObject, type XmlTagSink } from "./xmlscan";
+
+export { kindOf, parseXmlStream, attrValue };
+export type { Kind } from "./archive";
+export type { DbObject, DbLoad, XmlTagSink } from "./xmlscan";
 
 const PARAM_NAME_SET = new Set(PARAM_NAMES);
-
-export type DbObject = { cls: string; version: string; p: Record<string, string> };
-
-export type DbLoad = {
-  objects: Map<string, DbObject>;
-  filesRead: number;
-  scanned: number;
-};
-
-/** XML-unescape, but skip the five regex passes entirely when there is nothing to unescape. */
-function decode(s: string): string {
-  if (s.indexOf("&") === -1) return s;
-  return s
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'")
-    .replace(/&amp;/g, "&");
-}
-
-const isSpace = (c: number) => c === 32 || c === 9 || c === 10 || c === 13;
-
-/**
- * XML-decoded value of one attribute inside an element's attribute string.
- * Hand-rolled indexOf scan (no regex) - this runs once per managed object, so it matters.
- */
-function attrValue(s: string, name: string): string | undefined {
-  const len = name.length;
-  for (let idx = s.indexOf(name); idx !== -1; idx = s.indexOf(name, idx + 1)) {
-    const before = idx === 0 ? 32 : s.charCodeAt(idx - 1);
-    if (!isSpace(before)) continue;
-    let j = idx + len;
-    let c = s.charCodeAt(j);
-    while (isSpace(c)) c = s.charCodeAt(++j);
-    if (c !== 61) continue; // '='
-    c = s.charCodeAt(++j);
-    while (isSpace(c)) c = s.charCodeAt(++j);
-    if (c !== 34 && c !== 39) continue; // " or '
-    const end = s.indexOf(c === 34 ? '"' : "'", j + 1);
-    if (end !== -1) return decode(s.slice(j + 1, end));
-  }
-  return undefined;
-}
-
-const rxEscape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
-/**
- * Parse the `<p name="...">value</p>` children of a managed object we actually keep.
- *
- * When we know exactly which parameters the diff can read back (`paramRx`), a single compiled
- * alternation extracts just those in one pass over the object; real managed objects carry hundreds
- * of parameters of which we need a handful. `paramRx === null` keeps every parameter (used by the
- * offline regression harness).
- */
-function scanParams(data: Buffer, start: number, end: number, obj: DbObject, paramRx: RegExp | null) {
-  if (paramRx) {
-    const body = data.toString("utf8", start, end);
-    paramRx.lastIndex = 0;
-    let m: RegExpExecArray | null;
-    while ((m = paramRx.exec(body)) !== null) {
-      obj.p[m[1]] = decode(m[2]).trim();
-    }
-    return;
-  }
-
-  let i = start;
-  while (i < end) {
-    const p = data.indexOf("<p", i, "latin1");
-    if (p === -1 || p >= end) break;
-    if (!isSpace(data[p + 2])) {
-      i = p + 2;
-      continue;
-    }
-    const gt = data.indexOf(">", p + 3, "latin1");
-    if (gt === -1 || gt >= end) break;
-    if (data[gt - 1] === 47) {
-      i = gt + 1; // self-closing <p .../>
-      continue;
-    }
-    const name = attrValue(data.toString("utf8", p + 3, gt), "name");
-    const close = data.indexOf("</p>", gt + 1, "latin1");
-    if (close === -1 || close >= end) break;
-    if (name) obj.p[name] = decode(data.toString("utf8", gt + 1, close)).trim();
-    i = close + 4;
-  }
-}
-
-/**
- * Scan one RAML document straight from its bytes, keyed off `distName="` occurrences.
- *
- * Only objects whose distName is in `wanted` are kept, so a huge network export does not blow up
- * memory. Because the wanted set is built from LTE cell distNames, it already filters by class -
- * there is no need to parse the `class` attribute, and no need to visit objects we cannot use.
- *
- * Each accepted object costs a single native `indexOf` (to find the next distName); the closing
- * quote is found with a plain byte scan, which is far cheaper than another native call. Attribute
- * parsing (version) and body parsing happen only for objects that survive the wanted filter, which
- * is a tiny fraction of a network export.
- */
-function scanXml(data: Buffer, wanted: Set<string>, wantedParams: Set<string> | null, into: DbLoad) {
-  const KEY = 'distName="';
-  const klen = KEY.length;
-  const len = data.length;
-
-  // FNV-1a of each wanted distName. Comparing a rolled-up 32-bit hash avoids allocating a string
-  // for every one of the (potentially millions of) objects in the export - only the handful whose
-  // hash collides gets decoded, and those are re-checked against the set so collisions are harmless.
-  const hashes = new Set<number>();
-  for (const dn of wanted) {
-    const b = Buffer.from(dn, "utf8");
-    let h = 0x811c9dc5;
-    for (let i = 0; i < b.length; i++) {
-      h ^= b[i];
-      h = Math.imul(h, 0x01000193);
-    }
-    hashes.add(h);
-  }
-
-  const paramRx: RegExp | null = wantedParams
-    ? new RegExp(`<p name="(${Array.from(wantedParams, rxEscape).join("|")})">([^<]*)</p>`, "g")
-    : null;
-
-  let p = data.indexOf(KEY, 0);
-  while (p !== -1) {
-    const vs = p + klen;
-    let ve = vs;
-    while (ve < len && data[ve] !== 34) ve++; // '"'
-    if (ve >= len) break;
-
-    const next = data.indexOf(KEY, ve);
-    into.scanned++;
-
-    // Hash the distName in one allocation-free byte pass. Hashing every object is cheaper than any
-    // substring pre-filter (which would allocate a view and run two native searches per object);
-    // everything that cannot be wanted simply fails the hash-set lookup below and is skipped.
-    let h = 0x811c9dc5;
-    for (let i = vs; i < ve; i++) {
-      h ^= data[i];
-      h = Math.imul(h, 0x01000193);
-    }
-
-    if (hashes.has(h)) {
-      const dn = data.toString("utf8", vs, ve);
-      if (wanted.has(dn)) {
-        const open = data.lastIndexOf("<managedObject", p);
-        const tagStart = open < 0 ? vs : open + 13;
-        const gt = data.indexOf(">", ve);
-        if (gt !== -1) {
-          const selfClose = data[gt - 1] === 47; // '/'
-          const tag = data.toString("latin1", tagStart, selfClose ? gt - 1 : gt);
-          let cls = "NOKLTE:LNCEL";
-          if (dn.endsWith("/LNCEL_FDD-0")) cls = "NOKLTE:LNCEL_FDD";
-          else if (dn.endsWith("/LNCEL_TDD-0")) cls = "NOKLTE:LNCEL_TDD";
-          else if (dn.includes("/LNREL-")) cls = "NOKLTE:LNREL";
-          else if (dn.includes("/NRCELL-")) cls = "com.nokia.srbts.nrbts:NRCELL";
-          const version = attrValue(tag, "version");
-          const obj = into.objects.get(dn) ?? { cls, version: "", p: {} };
-          if (version) obj.version = version;
-          if (!selfClose) {
-            const bodyStart = gt + 1;
-            const bodyEnd = next === -1 ? len : data.lastIndexOf("<managedObject", next);
-            if (bodyEnd > bodyStart) scanParams(data, bodyStart, bodyEnd, obj, paramRx);
-          }
-          into.objects.set(dn, obj);
-        }
-      }
-    }
-    p = next;
-  }
-}
 
 function findCol(cols: string[], candidates: string[]): string | undefined {
   const lowerCols = cols.map((c) => c.toLowerCase());
@@ -365,83 +191,28 @@ function scanMdb(data: Buffer, wanted: Set<string>, into: DbLoad) {
   }
 }
 
-type Kind = "xml" | "gz" | "zip" | "rar" | "mdb" | null;
-
-/** Magic bytes first (links often have no usable file name), extension as a fallback. */
-export function kindOf(name: string, d: Buffer): Kind {
-  if (d.length > 6 && d.subarray(0, 4).toString("latin1") === "Rar!") return "rar";
-  if (d.length > 3 && d[0] === 0x50 && d[1] === 0x4b && (d[2] === 3 || d[2] === 5)) return "zip";
-  if (d.length > 2 && d[0] === 0x1f && d[1] === 0x8b) return "gz";
-  if (
-    d.length > 20 &&
-    (d.subarray(4, 19).toString("latin1") === "Standard Jet DB" ||
-      d.subarray(4, 19).toString("latin1") === "Standard ACE DB")
-  ) {
-    return "mdb";
-  }
-  const head = d.subarray(0, 64).toString("utf8").replace(/^\uFEFF/, "").trimStart();
-  if (head.startsWith("<")) return "xml";
-  const l = name.toLowerCase();
-  if (l.endsWith(".xml")) return "xml";
-  if (l.endsWith(".gz")) return "gz";
-  if (l.endsWith(".zip")) return "zip";
-  if (l.endsWith(".rar")) return "rar";
-  if (l.endsWith(".mdb") || l.endsWith(".accdb")) return "mdb";
-  return null;
-}
-
-/** Handles xml, mdb, gz, zip and rar - including archives nested inside archives. */
-async function ingest(
-  name: string,
-  data: Buffer,
-  wanted: Set<string>,
-  wantedParams: Set<string> | null,
-  into: DbLoad,
-  depth = 0,
-): Promise<void> {
-  if (depth > 4) return;
-  const kind = kindOf(name, data);
-
-  if (kind === "xml") {
-    into.filesRead++;
-    if (wanted.size > 0) scanXml(data, wanted, wantedParams, into);
-  } else if (kind === "mdb") {
-    into.filesRead++;
-    if (wanted.size > 0) scanMdb(data, wanted, into);
-  } else if (kind === "gz") {
-    await ingest(name.replace(/\.gz$/i, ""), gunzipSync(data), wanted, wantedParams, into, depth + 1);
-  } else if (kind === "zip") {
-    const zip = await JSZip.loadAsync(data);
-    for (const entry of Object.values(zip.files)) {
-      if (entry.dir) continue;
-      await ingest(entry.name, Buffer.from(await entry.async("uint8array")), wanted, wantedParams, into, depth + 1);
-    }
-  } else if (kind === "rar") {
-    const ab = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer;
-    try {
-      const extractor = await createExtractorFromData({ data: ab });
-      const { files } = extractor.extract({ files: (h) => /\.(xml|zip|gz|rar|mdb|accdb)$/i.test(h.name) });
-      for (const f of files) {
-        if (f.fileHeader.flags.directory || !f.extraction) continue;
-        await ingest(f.fileHeader.name, Buffer.from(f.extraction), wanted, wantedParams, into, depth + 1);
-      }
-    } catch (e) {
-      const why = e instanceof Error ? e.message : String(e);
-      throw new Error(
-        `Could not read "${name}" (${why}). It may be corrupt, password-protected or one part of a multi-volume RAR - ` +
-          `try extracting it and uploading the .mdb or .xml files or a .zip instead.`,
-      );
-    }
-  }
-  // anything else (readme, csv, ...) is ignored
-}
-
 export async function loadDb(
-  files: { name: string; data: Buffer }[],
+  files: { name: string; data: Buffer; path?: string }[],
   wanted: Set<string>,
   wantedParams: Set<string> | null = null,
 ): Promise<DbLoad> {
   const into: DbLoad = { objects: new Map(), filesRead: 0, scanned: 0 };
-  for (const f of files) await ingest(f.name, f.data, wanted, wantedParams, into);
+  const scanSink = wanted.size > 0 ? makeScanSink(wanted, wantedParams, into) : null;
+
+  const sinks: DbSinks = {
+    xml: async (source) => {
+      into.filesRead++;
+      if (scanSink) await parseXmlStream(source, scanSink);
+      // without a wanted set nothing is scanned, but a piped archive member must still be
+      // consumed or the extractor process deadlocks on backpressure
+      else for await (const _c of source) void _c;
+    },
+    mdb: (data) => {
+      into.filesRead++;
+      if (scanSink) scanMdb(data, wanted, into);
+    },
+  };
+
+  for (const f of files) await ingest(f.name, f.data, sinks, 0, f.path);
   return into;
 }

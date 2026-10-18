@@ -34,6 +34,13 @@ Several files can be uploaded at once; the format is detected from the file cont
 extension is fine. Only the cells listed in the CSV are read back out of the dump, so a full-network export stays fast and
 uses little memory. Files are processed in memory for the request only and are never stored.
 
+Large archives are streamed, not unpacked: a `.rar` is decompressed by the native `unrar` binary (WinRAR's `UnRAR.exe` or
+`unrar` on `PATH`, auto-detected) straight into the scan, and a RAML XML export is read chunk by chunk - a 3 GB XML
+converts in ~35-45 s with a few hundred MB of RAM. Optional environment variables: `UNRAR_PATH` (explicit unrar binary),
+`NO_NATIVE_UNRAR=1` (force the bundled WASM fallback, which buffers the archive and is capped by `MAX_WASM_RAR_MB`,
+default 1500), `NETACT_TMP_DIR` (scratch directory) and `MAX_EXTRACT_MB` (largest extracted member, default 3072).
+`.mdb` files must still be held in memory by `mdb-reader` (RAM roughly 2-3x the `.mdb` size).
+
 The API also still accepts database links (`dbUrl` form field, up to 5, one per line) for scripted callers; that path is
 handled by `src/lib/fetchDb.ts` (Google Drive links, direct http(s) links, local file paths) and is covered by
 `npm run test:fetch`. Environment variables (optional): `MAX_DB_MB` (download limit, default 1024),
@@ -87,6 +94,7 @@ falls back to the LTE classes (a couple of names, e.g. `angle`, exist in both bu
 npm run verify       # CSV + expected XML pairs (700/1800/2600, pci*, ho, actions and 5g)
 npm run test:fetch   # the link downloader (local imitation server: redirects, Drive warning page, private file, ...)
 npm run test:mdb     # reads the real cached.mdb if present (LTE)
+npm run test:big     # the real local archives: parity / inspect / xml / mdb (edit paths at the top of scripts/test-big.ts)
 npm run bench        # synthetic large dump: times wantedDistNames / loadDb / buildChanges
 ```
 
@@ -99,13 +107,16 @@ It cannot prove the comparison against your *real* database - only the format, m
 ```
 src/lib/config.ts   parameter -> class mapping (edit here)
 src/lib/input.ts    CSV / XLSX reader
-src/lib/db.ts       database loader (xml / gz / zip / rar), keeps only the cells needed
+src/lib/archive.ts  streaming ingest: rar / gz / zip / mdb sniffing, native unrar detection
+src/lib/xmlscan.ts  streaming RAML XML scanner (full scan + quick inspect)
+src/lib/db.ts       database loader, keeps only the cells needed
 src/lib/diff.ts     comparison
 src/lib/xml.ts      RAML writer
 src/app/api/convert/route.ts   POST endpoint
 src/components/     UI
 samples/            700 / 1800 / 2600: CSV, hand-made expected XML, and *.test-db.xml (SYNTHETIC databases for trying the UI)
 scripts/verify.ts   regression check (npm run verify)
+scripts/test-big.ts real-archive validation (npm run test:big)
 scripts/bench.ts    performance benchmark (npm run bench)
 ```
 
@@ -117,8 +128,13 @@ larger than the **4.5 MB** limit Vercel enforces on Route Handlers/Server Action
 runs (a plain-text `413`, surfaced in the UI as a "file too large" error). Deploy to Railway, Render, Fly.io, a VPS, or
 any Docker host instead.
 
-The included `Dockerfile` runs `next start` with the full dependency tree (safe for the `node-unrar-js` WASM and the
-`exceljs` / `mdb-reader` external packages). `.dockerignore` keeps `cached.mdb` / `cached.rar` out of the image.
+The included `Dockerfile` builds a production image that runs `next start` with the full production dependency tree
+(safe for the `node-unrar-js` WASM and the `exceljs` / `mdb-reader` external packages), drops the build cache and the
+dev-only packages, and **bundles native `unrar` 7.x** (from rarlab) - multi-GB `.rar` dumps are then streamed straight
+into the scanner, no memory-capped WASM fallback. `.dockerignore` keeps `cached.mdb` / `cached.rar` out of the image.
+On plain-Node hosts without Docker, install an `unrar` binary on `PATH` (or point `UNRAR_PATH` at it) for the same
+streaming path; otherwise the WASM fallback applies and `.rar` archives above `MAX_WASM_RAR_MB` (default 1500 MB) are
+rejected with a clear error.
 
 ```bash
 # Docker (portable)
@@ -131,8 +147,20 @@ npm ci && npm run build && npm start   # honors $PORT
 
 Before you push/deploy, confirm the build is clean: `npm run typecheck && npm run verify && npm run build`.
 
-Sizing: give the container enough RAM for the biggest dump you expect (roughly several times the `.mdb` size) - e.g.
-**2–4 GB** for a ~1 GB export.
+### Railway
+
+Railway picks the `Dockerfile` up automatically - no further configuration is needed. The measured numbers below are
+from that image end to end (upload included), with the real archives (57 MB `.rar` holding a 3.0 GB XML, 60 MB `.rar`
+holding a 1.3 GB `.mdb`):
+
+- `/api/inspect` of the XML archive: **~26-30 s**, 4.26 M managed objects.
+- `/api/convert` (700.csv vs that archive): **~56 s** total.
+- `/api/inspect` of the mdb archive: **~18 s**, 1477 tables.
+
+Sizing: give the service **4 GB+ RAM**. The mdb path holds the unpacked `.mdb` plus the reader's structures in memory
+(~3 GB peak for a 1.3 GB `.mdb`); the XML path stays around **0.5 GB**. XML-only deployments fit smaller plans.
+Uploaded archives are staged in `/tmp` while streaming (`NETACT_TMP_DIR` overrides the location), so keep about the
+compressed download size of ephemeral disk free.
 
 Vercel note: if you must use Vercel, only tiny databases work; large uploads are blocked at the platform layer and
 cannot be enabled by configuration.

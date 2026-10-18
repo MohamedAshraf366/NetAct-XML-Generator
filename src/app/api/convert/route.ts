@@ -94,7 +94,7 @@ export async function POST(req: Request) {
 
     // 2. get the database (uploaded files and / or pasted links), then read only the cells we need.
     //    With no database at all every planned value is written straight out as an update.
-    const sources: { name: string; data: Buffer }[] = [];
+    const sources: { name: string; data: Buffer; path?: string }[] = [];
     const dbSources: DbSource[] = [];
     for (const f of dbFiles) {
       const data = await toBuffer(f);
@@ -104,7 +104,7 @@ export async function POST(req: Request) {
     for (const link of links) {
       try {
         const got = await fetchDb(link);
-        sources.push(got);
+        sources.push({ name: got.name, data: got.data, path: got.path });
         dbSources.push({ name: got.name, bytes: got.data.length, from: "link" });
       } catch (e) {
         const short = link.length > 70 ? `${link.slice(0, 67)}...` : link;

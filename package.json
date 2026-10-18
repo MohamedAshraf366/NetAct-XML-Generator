@@ -13,7 +13,8 @@
     "verify": "tsx scripts/verify.ts",
     "bench": "tsx --expose-gc scripts/bench.ts",
     "test:fetch": "tsx scripts/test-fetch.ts",
-    "test:mdb": "tsx scripts/test-mdb.ts"
+    "test:mdb": "tsx scripts/test-mdb.ts",
+    "test:big": "tsx scripts/test-big.ts"
   },
   "dependencies": {
     "exceljs": "^4.4.0",
