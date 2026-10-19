@@ -207,7 +207,9 @@ export function buildChanges(
 ): { changes: Change[]; warnings: string[]; unchanged: number } {
   const map = new Map<string, Change>();
   const warnings: string[] = [];
-  const missingObj = new Map<string, string[]>(); // param -> distNames without a DB object
+  // param -> count + first two examples (the warning only shows two; a huge network must not
+  // accumulate every missing distName just to throw the rest away)
+  const missingObj = new Map<string, { count: number; examples: string[] }>();
   let notSet = 0;
   let unchanged = 0;
 
@@ -260,9 +262,13 @@ export function buildChanges(
 
       const cur = db ? db.get(dn) : undefined;
       if (db && !cur) {
-        const list = missingObj.get(p);
-        if (list) list.push(dn);
-        else missingObj.set(p, [dn]);
+        const entry = missingObj.get(p);
+        if (entry) {
+          entry.count++;
+          if (entry.examples.length < 2) entry.examples.push(dn);
+        } else {
+          missingObj.set(p, { count: 1, examples: [dn] });
+        }
         continue;
       }
 
@@ -354,11 +360,11 @@ export function buildChanges(
     c.params.push({ name: "ssPbchBlockPower", old: cur?.p.ssPbchBlockPower ?? "", new: String(target), derived: true });
   }
 
-  for (const [p, list] of missingObj) {
+  for (const [p, { count, examples }] of missingObj) {
     const def = resolveDef(paramDefs, p);
     const obj = objLabel(def);
-    const eg = list.slice(0, 2).map((d) => d.replace("PLMN-PLMN/", "")).join(", ");
-    warnings.push(`${p}: ${list.length} planned value(s) skipped - no ${obj} object in the database (e.g. ${eg})`);
+    const eg = examples.map((d) => d.replace("PLMN-PLMN/", "")).join(", ");
+    warnings.push(`${p}: ${count} planned value(s) skipped - no ${obj} object in the database (e.g. ${eg})`);
   }
   if (notSet > 0) {
     warnings.push(`${notSet} value(s) are not set in the database export and were treated as new values.`);

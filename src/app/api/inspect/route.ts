@@ -2,6 +2,7 @@ import fsp from "node:fs/promises";
 import { NextResponse } from "next/server";
 import { fetchDb } from "@/lib/fetchDb";
 import { ingest } from "@/lib/archive";
+import { openFileBuffer } from "@/lib/fileBuffer";
 import { inspectXmlStream } from "@/lib/xmlscan";
 import { releaseMemorySoon } from "@/lib/mem";
 import { isUploadId, removeUploads, uploadPath } from "@/lib/uploads";
@@ -15,6 +16,18 @@ const fail = (error: string, status = 400) => NextResponse.json({ error }, { sta
 
 async function toBuffer(f: File) {
   return Buffer.from(await f.arrayBuffer());
+}
+
+/** First bytes of a file on disk, enough to detect its format. */
+async function readPrefix(filePath: string, n: number): Promise<Buffer> {
+  const fh = await fsp.open(filePath, "r");
+  try {
+    const buf = Buffer.alloc(n);
+    const { bytesRead } = await fh.read(buf, 0, n, 0);
+    return buf.subarray(0, bytesRead);
+  } finally {
+    await fh.close();
+  }
 }
 
 export type TableInfo = {
@@ -37,8 +50,16 @@ export type DatabaseInspection = {
   xmlClassesFound?: string[];
 };
 
-function inspectMdb(data: Buffer, sourceName: string): DatabaseInspection {
-  const reader = new MDBReader(data);
+function inspectMdb(filePath: string, size: number, sourceName: string): DatabaseInspection {
+  const fileBuffer = openFileBuffer(filePath, size);
+  try {
+    return inspectMdbReader(new MDBReader(fileBuffer as unknown as Buffer), size, sourceName);
+  } finally {
+    fileBuffer.close();
+  }
+}
+
+function inspectMdbReader(reader: MDBReader, size: number, sourceName: string): DatabaseInspection {
   const tableNames = reader.getTableNames({ normalTables: true, systemTables: false, linkedTables: false });
 
   const tables: TableInfo[] = [];
@@ -106,7 +127,7 @@ function inspectMdb(data: Buffer, sourceName: string): DatabaseInspection {
   return {
     sourceName,
     kind: "mdb",
-    bytes: data.length,
+    bytes: size,
     tables: tables.sort((a, b) => (b.matchedRole ? 1 : 0) - (a.matchedRole ? 1 : 0)),
     detectedParameters,
   };
@@ -121,7 +142,15 @@ async function inspectXml(
   sourceName: string,
   bytes: number,
 ): Promise<DatabaseInspection> {
-  const found = await inspectXmlStream(source);
+  // Native `unrar lb` listing has no sizes, so the streamed member reports bytes=0; count them.
+  let counted = 0;
+  async function* counting(): AsyncGenerator<Buffer | Uint8Array> {
+    for await (const c of source) {
+      counted += c.length;
+      yield c;
+    }
+  }
+  const found = await inspectXmlStream(counting());
 
   const detectedParameters: { name: string; moClass: string; table: string }[] = [];
   for (const p of found.params) {
@@ -132,23 +161,23 @@ async function inspectXml(
   return {
     sourceName,
     kind: "xml",
-    bytes,
+    bytes: bytes || counted,
     xmlObjectsScanned: found.objectsScanned,
     xmlClassesFound: found.classes,
     detectedParameters,
   };
 }
 
-async function inspectBuffer(name: string, data: Buffer): Promise<DatabaseInspection[]> {
+async function inspectBuffer(name: string, data: Buffer, path?: string): Promise<DatabaseInspection[]> {
   const results: DatabaseInspection[] = [];
   await ingest(name, data, {
     xml: async (source, sourceName, bytes) => {
       results.push(await inspectXml(source, sourceName, bytes));
     },
-    mdb: (mdbData, mdbName) => {
-      results.push(inspectMdb(mdbData, mdbName));
+    mdb: (mdbPath, mdbName, size) => {
+      results.push(inspectMdb(mdbPath, size, mdbName));
     },
-  });
+  }, 0, path);
   return results;
 }
 
@@ -185,16 +214,17 @@ export async function POST(req: Request) {
     }
 
     for (const ref of dbRefs) {
-      const data = await fsp.readFile(ref.path).catch(() => null);
-      if (!data) return fail("The uploaded database file was not found on the server. Please retry the upload.");
-      const res = await inspectBuffer(ref.name, data);
+      const st = await fsp.stat(ref.path).catch(() => null);
+      if (!st?.isFile()) return fail("The uploaded database file was not found on the server. Please retry the upload.");
+      const prefix = await readPrefix(ref.path, 64);
+      const res = await inspectBuffer(ref.name, prefix, ref.path);
       inspections.push(...res);
     }
 
     for (const link of links) {
       try {
         const got = await fetchDb(link);
-        const res = await inspectBuffer(got.name, got.data);
+        const res = await inspectBuffer(got.name, got.data, got.path);
         inspections.push(...res);
       } catch (e) {
         return fail(`Could not fetch link ${link}: ${e instanceof Error ? e.message : String(e)}`);

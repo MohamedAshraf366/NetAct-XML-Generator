@@ -20,7 +20,7 @@ const allowLocal = () =>
     : !process.env.VERCEL && !process.env.NETLIFY;
 const driveBase = () => process.env.DRIVE_DOWNLOAD_BASE ?? "https://drive.usercontent.google.com/download";
 
-export type Fetched = { name: string; data: Buffer; path?: string };
+export type Fetched = { name: string; data: Buffer; path?: string; bytes?: number };
 
 /** File id of a Google Drive link: /file/d/<id>/view, /open?id=<id>, /uc?id=<id>, drive.usercontent.google.com/download?id=<id> */
 export function driveFileId(u: URL): string | null {
@@ -138,7 +138,17 @@ async function readLocal(p: string): Promise<Fetched> {
   }
   if (!st.isFile()) throw new Error(`Not a file: ${real}`);
   if (st.size > maxBytes()) throw new Error(`The file is larger than the ${Math.round(maxBytes() / 1048576)} MB limit.`);
-  return { name: path.basename(real), data: await fsp.readFile(real), path: real };
+  // Only a prefix is loaded; the archive/mdb readers stream the rest straight from disk.
+  const fh = await fsp.open(real, "r");
+  let prefix: Buffer;
+  try {
+    const buf = Buffer.alloc(64);
+    const { bytesRead } = await fh.read(buf, 0, 64, 0);
+    prefix = buf.subarray(0, bytesRead);
+  } finally {
+    await fh.close();
+  }
+  return { name: path.basename(real), data: prefix, path: real, bytes: st.size };
 }
 
 export async function fetchDb(raw: string): Promise<Fetched> {

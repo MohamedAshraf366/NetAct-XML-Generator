@@ -3,6 +3,10 @@ import type { Change } from "./types";
 const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 const escAttr = (s: string) => esc(s).replace(/"/g, "&quot;");
 
+/** Created once - `localeCompare` with options builds a collator per call. */
+const collator = new Intl.Collator(undefined, { sensitivity: "base" });
+const byName = (a: { name: string }, b: { name: string }) => collator.compare(a.name, b.name);
+
 function stamp(d: Date) {
   const p = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
@@ -31,10 +35,10 @@ export function writeRaml(changes: Change[], name: string, now = new Date()): st
     for (const [gname, list] of groups) units.push({ name: gname, params: list, isList: true });
 
     const ps = units
-      .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }))
+      .sort(byName)
       .map((u) => {
         const subs = u.params
-          .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }))
+          .sort(byName)
           .map((p) => `<p name="${escAttr(p.name)}">${esc(p.new)}</p>`)
           .join("");
         return u.isList ? `<list name="${escAttr(u.name)}"><item>${subs}</item></list>` : subs;

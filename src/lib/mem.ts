@@ -13,6 +13,15 @@ export function releaseMemory(): void {
   gc(); // a second pass collects what the first one's finalizers released
 }
 
+/**
+ * Release only when a file is big enough for its buffers to matter: on a small scan the two
+ * stop-the-world passes cost more than the memory they free. `releaseMemorySoon()` at the end of
+ * the request covers the rest.
+ */
+export function releaseMemoryAfter(bytes: number): void {
+  if (bytes >= 64 * 1024 * 1024) releaseMemory();
+}
+
 let scheduled = false;
 
 /** Collect shortly after the current task, once the response has been flushed. */

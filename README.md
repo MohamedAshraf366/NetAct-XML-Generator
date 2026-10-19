@@ -36,10 +36,13 @@ uses little memory. Files are processed in memory for the request only and are n
 
 Large archives are streamed, not unpacked: a `.rar` is decompressed by the native `unrar` binary (WinRAR's `UnRAR.exe` or
 `unrar` on `PATH`, auto-detected) straight into the scan, and a RAML XML export is read chunk by chunk - a 3 GB XML
-converts in ~35-45 s with a few hundred MB of RAM. Optional environment variables: `UNRAR_PATH` (explicit unrar binary),
-`NO_NATIVE_UNRAR=1` (force the bundled WASM fallback, which buffers the archive and is capped by `MAX_WASM_RAR_MB`,
-default 1500), `NETACT_TMP_DIR` (scratch directory) and `MAX_EXTRACT_MB` (largest extracted member, default 3072).
-`.mdb` files must still be held in memory by `mdb-reader` (RAM roughly 2-3x the `.mdb` size).
+converts in ~25-45 s with a few hundred MB of RAM. Member names come from `unrar lb`, so the archive itself is never
+buffered when it is already on disk; stream chunks are coalesced into ~2 MB blocks before parsing. Optional environment
+variables: `UNRAR_PATH` (explicit unrar binary), `NO_NATIVE_UNRAR=1` (force the bundled WASM fallback, which buffers the
+archive and is capped by `MAX_WASM_RAR_MB`, default 1500), `NETACT_TMP_DIR` (scratch directory) and `MAX_EXTRACT_MB`
+(largest extracted member, default 3072). `.mdb` files are read through a file-backed buffer (`src/lib/fileBuffer.ts`),
+so only the pages being scanned are in memory rather than the whole file. Large `.xlsx` sheets are read row by row with
+ExcelJS's streaming reader; files whose zip layout the streaming reader cannot handle fall back to the in-memory loader.
 
 The API also still accepts database links (`dbUrl` form field, up to 5, one per line) for scripted callers; that path is
 handled by `src/lib/fetchDb.ts` (Google Drive links, direct http(s) links, local file paths) and is covered by
@@ -122,11 +125,11 @@ scripts/bench.ts    performance benchmark (npm run bench)
 
 ## Deploying
 
-The app reads the whole database in memory (it unzips archives and parses Access via `mdb-reader`), so it must run on a
-normal Node.js server - **not** a serverless platform with a small request-body cap. A real `.mdb` / `.rar` dump is far
-larger than the **4.5 MB** limit Vercel enforces on Route Handlers/Server Actions, which it rejects before the handler
-runs (a plain-text `413`, surfaced in the UI as a "file too large" error). Deploy to Railway, Render, Fly.io, a VPS, or
-any Docker host instead.
+The app streams the database from disk (archives are decompressed by a native `unrar`/gzip stream, `.mdb` is read
+through a file-backed buffer), so a modest Node.js server is enough - but it is **not** suitable for a serverless
+platform with a small request-body or execution-time cap. A real `.mdb` / `.rar` dump is far larger than the **4.5 MB**
+limit Vercel enforces on Route Handlers/Server Actions, which it rejects before the handler runs (a plain-text `413`,
+surfaced in the UI as a "file too large" error). Deploy to Railway, Render, Fly.io, a VPS, or any Docker host instead.
 
 The included `Dockerfile` builds a production image that runs `next start` with the full production dependency tree
 (safe for the `node-unrar-js` WASM and the `exceljs` / `mdb-reader` external packages), drops the build cache and the
@@ -153,12 +156,15 @@ Railway picks the `Dockerfile` up automatically - no further configuration is ne
 from that image end to end (upload included), with the real archives (57 MB `.rar` holding a 3.0 GB XML, 60 MB `.rar`
 holding a 1.3 GB `.mdb`):
 
-- `/api/inspect` of the XML archive: **~26-30 s**, 4.26 M managed objects.
-- `/api/convert` (700.csv vs that archive): **~56 s** total.
-- `/api/inspect` of the mdb archive: **~18 s**, 1477 tables.
+- `/api/inspect` of the XML archive: **~26-35 s**, 4.26 M managed objects.
+- `/api/convert` (700.csv vs that archive): **~35-56 s** total.
+- `/api/inspect` of the mdb archive: **~18-23 s**, 1477 tables.
 
-Sizing: give the service **4 GB+ RAM**. The mdb path holds the unpacked `.mdb` plus the reader's structures in memory
-(~3 GB peak for a 1.3 GB `.mdb`); the XML path stays around **0.5 GB**. XML-only deployments fit smaller plans.
+Sizing: **1 GB RAM is enough** for both real archives. The `.mdb` is read from disk through a file-backed buffer
+(`src/lib/fileBuffer.ts`), so only the pages being scanned are in memory: in a 1 GB container the 1.3 GB `.mdb` job
+peaks at **~210 MB** of process memory (the rest of the cgroup limit is kernel page cache for the file, which is
+reclaimable); the XML path peaks around **0.4-0.5 GB**. (Earlier versions held the whole `.mdb` in RAM and needed
+~1.7 GB, which Railway's Trial/Free 1 GB and 512 MB limits killed with a 502.)
 Uploaded archives are staged in `/tmp` while streaming (`NETACT_TMP_DIR` overrides the location), so keep about the
 compressed download size of ephemeral disk free.
 
@@ -169,7 +175,7 @@ where a one-shot upload died with `ECONNRESET` after the 5-minute mark.
 
 Memory is also released explicitly: the `dev`/`start` scripts and the image run Node with `--expose-gc`, and each
 conversion/inspection collects its buffers right after the response (plus between database files), with a periodic
-sweep every 5 minutes. Measured in the container: idle RSS drops back to ~180 MB within seconds after even the
+sweep every 5 minutes. Measured in the container: idle RSS drops back to ~150-180 MB within seconds after even the
 1.3 GB-mdb and 3 GB-XML jobs; without it the process kept ~1.5 GB resident until the next natural collection.
 
 Vercel note: if you must use Vercel, only tiny databases work; large uploads are blocked at the platform layer and
@@ -177,6 +183,7 @@ cannot be enabled by configuration.
 
 ## Notes
 
-- Uploads are processed in memory, so run it locally or on a self-hosted server for large databases; serverless
-  hosts with a small request limit (e.g. Vercel Hobby, ≈4.5 MB) will reject a large database upload.
+- Large databases are streamed from disk: XML is parsed chunk by chunk, and the `.mdb` is read through a file-backed
+  buffer, so memory stays around half a gigabyte even for the multi-GB archives. Serverless hosts with a small request
+  limit (e.g. Vercel Hobby, ≈4.5 MB) still reject a large database upload at the platform layer.
 - The `samples/*.test-db.xml` files are not your real database - they only exist so each CSV reproduces its expected XML.

@@ -22,6 +22,18 @@ async function toBuffer(f: File) {
   return Buffer.from(await f.arrayBuffer());
 }
 
+/** First bytes of a file on disk, enough to detect its format. */
+async function readPrefix(filePath: string, n: number): Promise<Buffer> {
+  const fh = await fsp.open(filePath, "r");
+  try {
+    const buf = Buffer.alloc(n);
+    const { bytesRead } = await fh.read(buf, 0, n, 0);
+    return buf.subarray(0, bytesRead);
+  } finally {
+    await fh.close();
+  }
+}
+
 export async function POST(req: Request) {
   const uploadedIds: string[] = [];
   try {
@@ -110,7 +122,7 @@ export async function POST(req: Request) {
 
     // 2. get the database (uploaded files and / or pasted links), then read only the cells we need.
     //    With no database at all every planned value is written straight out as an update.
-    const sources: { name: string; data: Buffer; path?: string }[] = [];
+    const sources: { name: string; data: Buffer; path?: string; bytes?: number }[] = [];
     const dbSources: DbSource[] = [];
     for (const f of dbFiles) {
       const data = await toBuffer(f);
@@ -119,16 +131,19 @@ export async function POST(req: Request) {
     }
     // Large files arrive in chunks via /api/upload; "dbRef" is "<uploadId>|<original name>".
     for (const ref of dbRefs) {
-      const data = await fsp.readFile(ref.path).catch(() => null);
-      if (!data) return fail("The uploaded database file was not found on the server. Please retry the upload.");
-      sources.push({ name: ref.name, data, path: ref.path });
-      dbSources.push({ name: ref.name, bytes: data.length, from: "upload" });
+      const st = await fsp.stat(ref.path).catch(() => null);
+      if (!st?.isFile()) return fail("The uploaded database file was not found on the server. Please retry the upload.");
+      // Only a small prefix is read here: `ingest` detects the format from it and streams the rest
+      // from disk, so a 1.3 GB .mdb is never copied into RAM.
+      const prefix = await readPrefix(ref.path, 64);
+      sources.push({ name: ref.name, data: prefix, path: ref.path, bytes: st.size });
+      dbSources.push({ name: ref.name, bytes: st.size, from: "upload" });
     }
     for (const link of links) {
       try {
         const got = await fetchDb(link);
-        sources.push({ name: got.name, data: got.data, path: got.path });
-        dbSources.push({ name: got.name, bytes: got.data.length, from: "link" });
+        sources.push({ name: got.name, data: got.data, path: got.path, bytes: got.bytes });
+        dbSources.push({ name: got.name, bytes: got.bytes ?? got.data.length, from: "link" });
       } catch (e) {
         const short = link.length > 70 ? `${link.slice(0, 67)}...` : link;
         return fail(`Could not download the database from ${short}\n${e instanceof Error ? e.message : "Unknown error."}`);

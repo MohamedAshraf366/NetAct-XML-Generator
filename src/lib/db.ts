@@ -1,7 +1,8 @@
 import MDBReader from "mdb-reader";
 import { DEFAULT_NR_VERSION, DEFAULT_VERSION, NR_PARAMS, PARAM_NAMES } from "./config";
 import { ingest, kindOf, type DbSinks } from "./archive";
-import { releaseMemory } from "./mem";
+import { openFileBuffer } from "./fileBuffer";
+import { releaseMemoryAfter } from "./mem";
 import { makeScanSink, parseXmlStream, attrValue, type DbLoad, type DbObject, type XmlTagSink } from "./xmlscan";
 
 export { kindOf, parseXmlStream, attrValue };
@@ -9,6 +10,52 @@ export type { Kind } from "./archive";
 export type { DbObject, DbLoad, XmlTagSink } from "./xmlscan";
 
 const PARAM_NAME_SET = new Set(PARAM_NAMES);
+
+/** mdb-reader yields numbers for numeric columns and strings for text ones; both become ints. */
+function toId(v: unknown): number {
+  if (typeof v === "number") return Math.trunc(v);
+  if (typeof v === "string") return parseInt(v, 10);
+  if (typeof v === "bigint") return Number(v);
+  return NaN;
+}
+
+/** Numeric key for (mrbts, cell) - cheap enough to check before building any distName string. */
+const idKey = (mrbts: number, cel: number) => mrbts * 65536 + cel;
+
+type IdPrefilter = {
+  lncel: Set<number>;
+  fdd: Set<number>;
+  tdd: Set<number>;
+  lnrel: Set<number>;
+  nr: Set<number>;
+};
+
+const LTE_WANTED_RX = /^PLMN-PLMN\/MRBTS-(\d+)\/LNBTS-\d+\/LNCEL-(\d+)(?:\/(LNCEL_FDD|LNCEL_TDD|LNREL).*)?$/;
+const NR_WANTED_RX = /^PLMN-PLMN\/MRBTS-(\d+)\/NRBTS-\d+\/NRCELL-(\d+)$/;
+
+/**
+ * A huge export is scanned row by row, but only a handful of cells are wanted. Parsing the wanted
+ * distNames once into numeric keys lets the scan skip ~99% of the network before it formats a
+ * single `PLMN-PLMN/...` string.
+ */
+function buildPrefilter(wanted: Set<string>): IdPrefilter {
+  const out: IdPrefilter = { lncel: new Set(), fdd: new Set(), tdd: new Set(), lnrel: new Set(), nr: new Set() };
+  for (const dn of wanted) {
+    const nr = NR_WANTED_RX.exec(dn);
+    if (nr) {
+      out.nr.add(idKey(Number(nr[1]), Number(nr[2])));
+      continue;
+    }
+    const lte = LTE_WANTED_RX.exec(dn);
+    if (!lte) continue;
+    const key = idKey(Number(lte[1]), Number(lte[2]));
+    if (lte[3] === "LNCEL_FDD") out.fdd.add(key);
+    else if (lte[3] === "LNCEL_TDD") out.tdd.add(key);
+    else if (lte[3] === "LNREL") out.lnrel.add(key);
+    else out.lncel.add(key);
+  }
+  return out;
+}
 
 function findCol(cols: string[], candidates: string[]): string | undefined {
   const lowerCols = cols.map((c) => c.toLowerCase());
@@ -20,12 +67,22 @@ function findCol(cols: string[], candidates: string[]): string | undefined {
 }
 
 /**
- * Scan an Access database (.mdb / .accdb).
+ * Scan an Access database (.mdb / .accdb) from disk.
  * Identifies LNCEL, LNCEL_FDD, LNCEL_TDD and LNCEL_PC tables, reads only requested parameter
- * columns, and maps them to distNames for fast in-memory diffing.
+ * columns, and maps them to distNames for fast in-memory diffing. The database stays on disk:
+ * mdb-reader gets a file-backed buffer, so only the pages being read are in memory.
  */
-function scanMdb(data: Buffer, wanted: Set<string>, into: DbLoad) {
-  const reader = new MDBReader(data);
+function scanMdb(filePath: string, size: number, wanted: Set<string>, into: DbLoad) {
+  const fileBuffer = openFileBuffer(filePath, size);
+  try {
+    scanMdbReader(new MDBReader(fileBuffer as unknown as Buffer), wanted, into);
+  } finally {
+    fileBuffer.close();
+  }
+}
+
+function scanMdbReader(reader: MDBReader, wanted: Set<string>, into: DbLoad) {
+  const pre = buildPrefilter(wanted);
   const tables = reader.getTableNames({ normalTables: true, systemTables: false, linkedTables: false });
 
   // 1. Locate LNCEL table (e.g. A_LTE_MRBTS_LNBTS_LNCEL or LNCEL)
@@ -52,6 +109,7 @@ function scanMdb(data: Buffer, wanted: Set<string>, into: DbLoad) {
     isSecondary = false,
     idCol?: string,
     idPrefix?: string,
+    keys?: Set<number>,
   ) => {
     if (!tableName) return;
     try {
@@ -78,13 +136,14 @@ function scanMdb(data: Buffer, wanted: Set<string>, into: DbLoad) {
       const rows = table.getData({ columns: reqCols });
 
       for (const r of rows) {
-        const mrbts = parseInt(String(r[mrbtsCol]), 10);
-        const bts =
-          btsCol && r[btsCol] !== null && r[btsCol] !== undefined
-            ? parseInt(String(r[btsCol]), 10)
-            : mrbts;
-        const cel = parseInt(String(r[celCol]), 10);
+        const mrbts = toId(r[mrbtsCol]);
+        const cel = toId(r[celCol]);
         if (isNaN(mrbts) || isNaN(cel)) continue;
+        if (!isSecondary) into.scanned++;
+        // Skip rows that cannot match before formatting a single string.
+        if (keys && !keys.has(idKey(mrbts, cel))) continue;
+
+        const bts = btsCol && r[btsCol] !== null && r[btsCol] !== undefined ? toId(r[btsCol]) : mrbts;
 
         let dn = `PLMN-PLMN/MRBTS-${mrbts}/LNBTS-${bts}/LNCEL-${cel}${suffix}`;
         if (idColumn) {
@@ -92,7 +151,6 @@ function scanMdb(data: Buffer, wanted: Set<string>, into: DbLoad) {
           if (idv === null || idv === undefined || idv === "") continue;
           dn += `/${idPrefix ?? ""}${String(idv)}`;
         }
-        if (!isSecondary) into.scanned++;
         if (!wanted.has(dn)) continue;
 
         const obj: DbObject = into.objects.get(dn) ?? {
@@ -114,11 +172,11 @@ function scanMdb(data: Buffer, wanted: Set<string>, into: DbLoad) {
     }
   };
 
-  processTable(lncelTableName, "NOKLTE:LNCEL", "");
-  processTable(pcTableName, "NOKLTE:LNCEL", "", true); // pMax merges into LNCEL
-  processTable(fddTableName, "NOKLTE:LNCEL_FDD", "/LNCEL_FDD-0");
-  processTable(tddTableName, "NOKLTE:LNCEL_TDD", "/LNCEL_TDD-0");
-  processTable(lnrelTableName, "NOKLTE:LNREL", "", false, "lnRelId", "LNREL-");
+  processTable(lncelTableName, "NOKLTE:LNCEL", "", false, undefined, undefined, pre.lncel);
+  processTable(pcTableName, "NOKLTE:LNCEL", "", true, undefined, undefined, pre.lncel); // pMax merges into LNCEL
+  processTable(fddTableName, "NOKLTE:LNCEL_FDD", "/LNCEL_FDD-0", false, undefined, undefined, pre.fdd);
+  processTable(tddTableName, "NOKLTE:LNCEL_TDD", "/LNCEL_TDD-0", false, undefined, undefined, pre.tdd);
+  processTable(lnrelTableName, "NOKLTE:LNREL", "", false, "lnRelId", "LNREL-", pre.lnrel);
 
   // NR (5G): the NRCELL managed object is split across many tables that all share the
   // (mrbtsId, nrBtsId, nrCellId) key. We read every NRCELL* table and merge any column that
@@ -150,12 +208,13 @@ function scanMdb(data: Buffer, wanted: Set<string>, into: DbLoad) {
       const rows = table.getData({ columns: reqCols });
 
       for (const r of rows) {
-        const mrbts = parseInt(String(r[mrbtsCol]), 10);
-        const bts = btsCol && r[btsCol] !== null && r[btsCol] !== undefined ? parseInt(String(r[btsCol]), 10) : mrbts;
-        const cel = parseInt(String(r[celCol]), 10);
+        const mrbts = toId(r[mrbtsCol]);
+        const bts = btsCol && r[btsCol] !== null && r[btsCol] !== undefined ? toId(r[btsCol]) : mrbts;
+        const cel = toId(r[celCol]);
         if (isNaN(mrbts) || isNaN(bts) || isNaN(cel)) continue;
 
         if (isBase) into.scanned++;
+        if (!pre.nr.has(idKey(mrbts, cel))) continue;
         const dn = `PLMN-PLMN/MRBTS-${mrbts}/NRBTS-${bts}/NRCELL-${cel}`;
         if (!wanted.has(dn)) continue;
 
@@ -193,7 +252,7 @@ function scanMdb(data: Buffer, wanted: Set<string>, into: DbLoad) {
 }
 
 export async function loadDb(
-  files: { name: string; data: Buffer; path?: string }[],
+  files: { name: string; data: Buffer; path?: string; bytes?: number }[],
   wanted: Set<string>,
   wantedParams: Set<string> | null = null,
 ): Promise<DbLoad> {
@@ -208,15 +267,15 @@ export async function loadDb(
       // consumed or the extractor process deadlocks on backpressure
       else for await (const _c of source) void _c;
     },
-    mdb: (data) => {
+    mdb: (path, _name, size) => {
       into.filesRead++;
-      if (scanSink) scanMdb(data, wanted, into);
+      if (scanSink) scanMdb(path, size, wanted, into);
     },
   };
 
   for (const f of files) {
     await ingest(f.name, f.data, sinks, 0, f.path);
-    releaseMemory(); // one scan's buffers shouldn't stack onto the next file
+    releaseMemoryAfter(f.bytes ?? f.data.length); // one big scan's buffers shouldn't stack onto the next
   }
   return into;
 }

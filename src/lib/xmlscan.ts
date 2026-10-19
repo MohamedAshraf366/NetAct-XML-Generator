@@ -1,9 +1,8 @@
 import { NR_PARAMS, PARAMS } from "./config";
 
 /**
- * Streaming RAML XML scanning, shared by the in-process pipeline and the scan worker
- * (src/lib/scan-worker.ts). Pure functions only - no mdb / archive imports - so the worker
- * bundle stays small.
+ * Streaming RAML XML scanning for the database ingest pipeline. Pure functions only - no mdb /
+ * archive imports - so a caller could run them off the main thread without pulling those in.
  */
 
 export type DbObject = { cls: string; version: string; p: Record<string, string> };

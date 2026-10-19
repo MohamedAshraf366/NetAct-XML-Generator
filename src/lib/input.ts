@@ -1,5 +1,6 @@
 import Papa from "papaparse";
 import ExcelJS from "exceljs";
+import { Readable } from "node:stream";
 import type { Row } from "./types";
 
 function cellToString(v: unknown): string {
@@ -14,21 +15,58 @@ function cellToString(v: unknown): string {
   return String(v).trim();
 }
 
+/**
+ * XLSX via ExcelJS's streaming reader: the unpacked workbook is not held in memory, so a sheet
+ * with hundreds of thousands of rows is read row by row. Only the first worksheet is used.
+ *
+ * The stream reader resolves shared strings only if `sharedStrings.xml` precedes the worksheets
+ * in the zip (true for Excel / LibreOffice output). Some generators put it after; their cells
+ * arrive as `{ sharedString: n }` placeholders, so detect that and use the in-memory loader.
+ */
+async function readXlsx(buf: Buffer): Promise<{ header: string[]; rows: Row[] }> {
+  const raw: string[][] = [];
+  let unresolved = false;
+  try {
+    const reader = new ExcelJS.stream.xlsx.WorkbookReader(Readable.from([buf], { objectMode: false }), {
+      worksheets: "emit",
+      sharedStrings: "cache",
+      styles: "cache", // needed to turn date-formatted serials back into dates
+      entries: "ignore",
+    });
+    for await (const sheet of reader) {
+      for await (const row of sheet) {
+        const vals = (row.values as unknown[]).slice(1); // exceljs is 1-indexed
+        const out: string[] = new Array(vals.length);
+        for (let i = 0; i < vals.length; i++) {
+          const v = vals[i];
+          if (v && typeof v === "object" && "sharedString" in (v as Record<string, unknown>)) unresolved = true;
+          out[i] = cellToString(v);
+        }
+        raw.push(out);
+      }
+      break; // first worksheet only
+    }
+    if (!unresolved && raw.length > 0) return toRows(raw);
+  } catch {
+    // fall through to the in-memory reader
+  }
+
+  raw.length = 0;
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(buf as unknown as ArrayBuffer);
+  const ws = wb.worksheets[0];
+  if (!ws) throw new Error("The Excel file has no worksheets.");
+  ws.eachRow({ includeEmpty: false }, (row) => {
+    const vals = (row.values as unknown[]).slice(1);
+    raw.push(Array.from({ length: vals.length }, (_, i) => cellToString(vals[i])));
+  });
+  return toRows(raw);
+}
+
 export async function readInput(name: string, buf: Buffer): Promise<{ header: string[]; rows: Row[] }> {
   const lower = name.toLowerCase();
 
-  if (lower.endsWith(".xlsx") || lower.endsWith(".xlsm")) {
-    const wb = new ExcelJS.Workbook();
-    await wb.xlsx.load(buf as unknown as ArrayBuffer);
-    const ws = wb.worksheets[0];
-    if (!ws) throw new Error("The Excel file has no worksheets.");
-    const raw: string[][] = [];
-    ws.eachRow({ includeEmpty: false }, (row) => {
-      const vals = (row.values as unknown[]).slice(1); // exceljs is 1-indexed
-      raw.push(Array.from({ length: vals.length }, (_, i) => cellToString(vals[i])));
-    });
-    return toRows(raw);
-  }
+  if (lower.endsWith(".xlsx") || lower.endsWith(".xlsm")) return readXlsx(buf);
 
   if (lower.endsWith(".xls")) {
     throw new Error("Old .xls files are not supported - please save the sheet as .xlsx or .csv.");
@@ -64,8 +102,13 @@ export function canonicalize(
 ): { header: string[]; rows: Row[] } {
   const lookup = new Map(canonical.map((c) => [c.toLowerCase(), c]));
   const map = new Map(header.map((h) => [h, lookup.get(h.toLowerCase()) ?? aliases[h.toLowerCase()] ?? h]));
-  return {
-    header: header.map((h) => map.get(h)!),
-    rows: rows.map((r) => Object.fromEntries(Object.entries(r).map(([k, v]) => [map.get(k) ?? k, v]))),
-  };
+  // One for-in pass per row - no Object.entries()/fromEntries() pair per row.
+  const renamed: Row[] = new Array(rows.length);
+  for (let i = 0; i < rows.length; i++) {
+    const src = rows[i];
+    const dst: Row = {};
+    for (const k in src) dst[map.get(k) ?? k] = src[k];
+    renamed[i] = dst;
+  }
+  return { header: header.map((h) => map.get(h)!), rows: renamed };
 }
