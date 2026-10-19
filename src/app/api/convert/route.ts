@@ -1,3 +1,4 @@
+import fsp from "node:fs/promises";
 import { NextResponse } from "next/server";
 import { ALL_PARAM_NAMES, PARAM_ALIASES, defaultParamNamesFor, paramsFor, type ParamDef, type Tech } from "@/lib/config";
 import { buildChanges, dbParamNames, wantedDistNames } from "@/lib/diff";
@@ -6,6 +7,7 @@ import { fetchDb } from "@/lib/fetchDb";
 import { canonicalize, readInput } from "@/lib/input";
 import { releaseMemorySoon } from "@/lib/mem";
 import type { ConvertResponse, DbSource } from "@/lib/types";
+import { isUploadId, removeUploads, uploadPath } from "@/lib/uploads";
 import { writeRaml } from "@/lib/xml";
 
 export const runtime = "nodejs";
@@ -21,6 +23,7 @@ async function toBuffer(f: File) {
 }
 
 export async function POST(req: Request) {
+  const uploadedIds: string[] = [];
   try {
     const form = await req.formData();
 
@@ -32,6 +35,18 @@ export async function POST(req: Request) {
       .flatMap((v) => String(v).split(/\s+/))
       .filter(Boolean);
     if (links.length > 5) return fail("Please give at most 5 database links.");
+
+    // Large files arrive in chunks via /api/upload; "dbRef" is "<uploadId>|<original name>".
+    // Register them for cleanup immediately so the temp files are removed even if validation fails.
+    const dbRefs: { name: string; path: string }[] = [];
+    for (const ref of form.getAll("dbRef").map(String)) {
+      const sep = ref.indexOf("|");
+      const id = sep === -1 ? ref : ref.slice(0, sep);
+      const refName = (sep === -1 ? "" : ref.slice(sep + 1)) || "database.bin";
+      if (!isUploadId(id)) return fail("Invalid database reference.");
+      uploadedIds.push(id);
+      dbRefs.push({ name: refName, path: uploadPath(id) });
+    }
 
     // Manual mapping fallback support:
     // e.g. mappings='{"customParam": {"cls": "NOKLTE:LNCEL", "suffix": "", "defaultOn": true}}'
@@ -102,6 +117,13 @@ export async function POST(req: Request) {
       sources.push({ name: f.name, data });
       dbSources.push({ name: f.name, bytes: data.length, from: "upload" });
     }
+    // Large files arrive in chunks via /api/upload; "dbRef" is "<uploadId>|<original name>".
+    for (const ref of dbRefs) {
+      const data = await fsp.readFile(ref.path).catch(() => null);
+      if (!data) return fail("The uploaded database file was not found on the server. Please retry the upload.");
+      sources.push({ name: ref.name, data, path: ref.path });
+      dbSources.push({ name: ref.name, bytes: data.length, from: "upload" });
+    }
     for (const link of links) {
       try {
         const got = await fetchDb(link);
@@ -153,6 +175,7 @@ export async function POST(req: Request) {
     console.error(e);
     return fail(e instanceof Error ? e.message : "Conversion failed.", 500);
   } finally {
+    await removeUploads(uploadedIds);
     releaseMemorySoon();
   }
 }

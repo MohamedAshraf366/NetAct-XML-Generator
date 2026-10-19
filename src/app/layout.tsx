@@ -21,7 +21,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         />
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
       </head>
-      <body className="flex min-h-screen flex-col">
+      <body className="flex min-h-screen flex-col" suppressHydrationWarning>
         <div className="flex-1">{children}</div>
         <Footer />
       </body>

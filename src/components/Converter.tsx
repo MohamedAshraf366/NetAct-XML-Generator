@@ -7,7 +7,15 @@ import { writeRaml } from "@/lib/xml";
 
 const FILE_PREFIX = "Mohamed Ashraf";
 
+/** Database files above this size are uploaded in chunks (hosting proxies cut long uploads off). */
+const UPLOAD_CHUNK = 8 * 1024 * 1024;
+
 const stem = (n: string) => n.replace(/\.[^.]+$/, "").split("_").pop() ?? "";
+
+const newUploadId = () =>
+  typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `u${Date.now().toString(36)}${Math.random().toString(36).slice(2, 12)}${Math.random().toString(36).slice(2, 12)}`;
 
 const editKey = (distName: string, param: string) => `${distName}|${param}`;
 
@@ -142,6 +150,7 @@ export default function Converter({ paramNames, paramMeta }: { paramNames: strin
   const [name, setName] = useState("");
   const [nameTouched, setNameTouched] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<ConvertResponse | null>(null);
   const [view, setView] = useState<"table" | "xml">("table");
@@ -213,9 +222,44 @@ export default function Converter({ paramNames, paramMeta }: { paramNames: strin
         const parts = links.split(/\s+/).map((s) => s.trim()).filter(Boolean);
         parts.forEach((url) => fd.append("dbUrl", url));
       } else {
-        db.forEach((f) => fd.append("db", f));
+        for (const f of db) {
+          if (f.size > UPLOAD_CHUNK) {
+            // Send the file in small pieces first - one huge request body can be cut off by the
+            // hosting proxy (Railway closes bodies that take over ~5 minutes to upload).
+            const id = newUploadId();
+            let sent = 0;
+            while (sent < f.size) {
+              const end = Math.min(sent + UPLOAD_CHUNK, f.size);
+              setProgress(`Uploading ${f.name} — ${Math.round((sent / f.size) * 100)}%`);
+              const cfd = new FormData();
+              cfd.append("id", id);
+              cfd.append("chunk", f.slice(sent, end), f.name);
+              let res: Response;
+              try {
+                res = await fetch("/api/upload", { method: "POST", body: cfd });
+              } catch {
+                throw new Error(`The upload of ${f.name} was interrupted. Please check your connection and retry.`);
+              }
+              if (!res.ok) {
+                const t = await res.text();
+                let msg = t.trim().slice(0, 300);
+                try {
+                  msg = String((JSON.parse(t) as { error?: unknown }).error ?? msg);
+                } catch {
+                  /* plain-text proxy error */
+                }
+                throw new Error(`Uploading ${f.name} failed: ${msg || res.status}`);
+              }
+              sent = end;
+            }
+            fd.append("dbRef", `${id}|${f.name}`);
+          } else {
+            fd.append("db", f);
+          }
+        }
       }
       fd.append("name", name);
+      setProgress(db.some((f) => f.size > UPLOAD_CHUNK) && dbMode === "upload" ? "Comparing…" : null);
       const res = await fetch("/api/convert", { method: "POST", body: fd });
       // A large database upload can be rejected by the hosting platform (e.g. Vercel's 4.5 MB
       // request-body limit) before the route runs, which returns plain text, not JSON.
@@ -247,9 +291,16 @@ export default function Converter({ paramNames, paramMeta }: { paramNames: strin
       setColFilters(emptyColFilters());
       setView("table");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Something went wrong.");
+      setError(
+        e instanceof TypeError
+          ? "The connection to the server was interrupted. Please check your connection and try again."
+          : e instanceof Error
+            ? e.message
+            : "Something went wrong.",
+      );
     } finally {
       setBusy(false);
+      setProgress(null);
     }
   }
 
@@ -629,7 +680,7 @@ export default function Converter({ paramNames, paramMeta }: { paramNames: strin
                 <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" className="opacity-25" />
                 <path d="M12 2a10 10 0 0 1 10 10" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
               </svg>
-              {hasDb ? "Comparing…" : "Generating…"}
+              {progress ?? (hasDb ? "Comparing…" : "Generating…")}
             </>
           ) : (
             <>

@@ -1,8 +1,10 @@
+import fsp from "node:fs/promises";
 import { NextResponse } from "next/server";
 import { fetchDb } from "@/lib/fetchDb";
 import { ingest } from "@/lib/archive";
 import { inspectXmlStream } from "@/lib/xmlscan";
 import { releaseMemorySoon } from "@/lib/mem";
+import { isUploadId, removeUploads, uploadPath } from "@/lib/uploads";
 import { NR_PARAMS, PARAM_NAMES, PARAMS } from "@/lib/config";
 import MDBReader from "mdb-reader";
 
@@ -151,6 +153,7 @@ async function inspectBuffer(name: string, data: Buffer): Promise<DatabaseInspec
 }
 
 export async function POST(req: Request) {
+  const uploadedIds: string[] = [];
   try {
     const form = await req.formData();
     const dbFiles = form.getAll("db").filter((f): f is File => f instanceof File && f.size > 0);
@@ -158,8 +161,18 @@ export async function POST(req: Request) {
       .getAll("dbUrl")
       .flatMap((v) => String(v).split(/\s+/))
       .filter(Boolean);
+    // Chunked uploads (see /api/upload): "dbRef" is "<uploadId>|<original name>".
+    const dbRefs: { name: string; path: string }[] = [];
+    for (const ref of form.getAll("dbRef").map(String)) {
+      const sep = ref.indexOf("|");
+      const id = sep === -1 ? ref : ref.slice(0, sep);
+      const refName = (sep === -1 ? "" : ref.slice(sep + 1)) || "database.bin";
+      if (!isUploadId(id)) return fail("Invalid database reference.");
+      uploadedIds.push(id);
+      dbRefs.push({ name: refName, path: uploadPath(id) });
+    }
 
-    if (dbFiles.length === 0 && links.length === 0) {
+    if (dbFiles.length === 0 && links.length === 0 && dbRefs.length === 0) {
       return fail("Please upload a database file or provide a database link.");
     }
 
@@ -168,6 +181,13 @@ export async function POST(req: Request) {
     for (const f of dbFiles) {
       const data = await toBuffer(f);
       const res = await inspectBuffer(f.name, data);
+      inspections.push(...res);
+    }
+
+    for (const ref of dbRefs) {
+      const data = await fsp.readFile(ref.path).catch(() => null);
+      if (!data) return fail("The uploaded database file was not found on the server. Please retry the upload.");
+      const res = await inspectBuffer(ref.name, data);
       inspections.push(...res);
     }
 
@@ -186,6 +206,7 @@ export async function POST(req: Request) {
     console.error("Inspection error:", e);
     return fail(e instanceof Error ? e.message : "Inspection failed.", 500);
   } finally {
+    await removeUploads(uploadedIds);
     releaseMemorySoon();
   }
 }

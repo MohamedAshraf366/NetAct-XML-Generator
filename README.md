@@ -162,6 +162,11 @@ Sizing: give the service **4 GB+ RAM**. The mdb path holds the unpacked `.mdb` p
 Uploaded archives are staged in `/tmp` while streaming (`NETACT_TMP_DIR` overrides the location), so keep about the
 compressed download size of ephemeral disk free.
 
+Large uploads survive slow connections: Railway rejects any request whose body takes longer than 5 minutes to arrive,
+so database files above 8 MB are uploaded in small chunks (`POST /api/upload`, assembled server-side and deleted right
+after the request) instead of one long-running request. A single 57 MB archive now goes through even on a slow uplink,
+where a one-shot upload died with `ECONNRESET` after the 5-minute mark.
+
 Memory is also released explicitly: the `dev`/`start` scripts and the image run Node with `--expose-gc`, and each
 conversion/inspection collects its buffers right after the response (plus between database files), with a periodic
 sweep every 5 minutes. Measured in the container: idle RSS drops back to ~180 MB within seconds after even the
