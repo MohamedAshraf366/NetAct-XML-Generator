@@ -37,18 +37,58 @@ uses little memory. Files are processed in memory for the request only and are n
 Large archives are streamed, not unpacked: a `.rar` is decompressed by the native `unrar` binary (WinRAR's `UnRAR.exe` or
 `unrar` on `PATH`, auto-detected) straight into the scan, and a RAML XML export is read chunk by chunk - a 3 GB XML
 converts in ~25-45 s with a few hundred MB of RAM. Member names come from `unrar lb`, so the archive itself is never
-buffered when it is already on disk; stream chunks are coalesced into ~2 MB blocks before parsing. Optional environment
-variables: `UNRAR_PATH` (explicit unrar binary), `NO_NATIVE_UNRAR=1` (force the bundled WASM fallback, which buffers the
-archive and is capped by `MAX_WASM_RAR_MB`, default 1500), `NETACT_TMP_DIR` (scratch directory) and `MAX_EXTRACT_MB`
-(largest extracted member, default 3072). `.mdb` files are read through a file-backed buffer (`src/lib/fileBuffer.ts`),
+buffered when it is already on disk. Optional environment variables: `UNRAR_PATH` (explicit unrar binary),
+`NO_NATIVE_UNRAR=1` (force the bundled WASM fallback, which buffers the archive and is capped by `MAX_WASM_RAR_MB`,
+default 1500), `NETACT_TMP_DIR` (scratch directory) and `MAX_EXTRACT_MB` (largest extracted member, default 3072).
+`.mdb` files are read through a file-backed buffer (`src/lib/fileBuffer.ts`),
 so only the pages being scanned are in memory rather than the whole file. Large `.xlsx` sheets are read row by row with
 ExcelJS's streaming reader; files whose zip layout the streaming reader cannot handle fall back to the in-memory loader.
 
 The API also still accepts database links (`dbUrl` form field, up to 5, one per line) for scripted callers; that path is
-handled by `src/lib/fetchDb.ts` (Google Drive links, direct http(s) links, local file paths) and is covered by
-`npm run test:fetch`. Environment variables (optional): `MAX_DB_MB` (download limit, default 1024),
-`ALLOW_PRIVATE_URLS=true` (allow links to localhost / intranet servers - blocked by default because the download is done
-by the server).
+handled by `src/lib/fetchDb.ts` (Google Drive links and direct http(s) links) and is covered by `npm run test:fetch`.
+Environment variables (optional): `MAX_DB_MB` (download limit, default 1024), `ALLOW_PRIVATE_URLS=true` (allow links to
+localhost / intranet servers - blocked by default because the download is done by the server), and
+`ALLOW_LOCAL_FILES=true` (allow reading local paths such as `/var/dumps/db.rar`; **off by default**, and the Docker
+image sets it to `false`).
+
+## Fill an empty NetAct dump from a full export (`/fill`)
+
+`/fill` builds a ready-to-import Access dump instead of a plan XML. Upload the full RAML XML export (`.xml`,
+`.xml.gz`, or a `.rar` containing it) and an empty template dump (`Dump 4G+5G.mdb`). The app writes every managed
+object, parameter and nested list into the template's `A_<class>` tables, using the template's own
+`IMPORT_CLASS_FILTER` / `IMPORT_PARAMETER_FILTER` / `IMPORT_LIST_MAPPING` rows, then returns a ZIP with the filled
+`.mdb`. Classes or parameters that the template does not import (hardware inventory, activation counters, ...) are
+counted and skipped exactly like NetAct does.
+
+The job runs inside the Node process, one job at a time, in the background. Large uploads go through the same 8 MB
+chunked upload as the converter, so proxies never see a long request body. The XML is streamed into a Java helper
+that inserts rows with Jackcess; peak memory stays near the Java heap, independent of the XML size. A 3.3 GB export
+fills the 126 MB template into a ~1.3 GB dump in about 25 minutes on a desktop; small hosted instances are slower.
+
+Requirements:
+
+- **Java 17+**. The app checks `MDB_FILL_JAVA`, `JAVA_HOME`, a portable JRE in `tools/jre`, common installer
+  locations and finally `java` on `PATH`. Docker installs a JRE and compiles the helper during the image build; for
+  local development compile it once:
+  `javac -cp tools/mdb-fill/jackcess-5.0.4.jar -d tools/mdb-fill/classes tools/mdb-fill/MdbFill.java`
+- Disk space for the XML, a full copy of the template, and the ZIP (roughly the XML + 2 × the dump). Set
+  `NETACT_TMP_DIR` to a volume with enough room; uploads and finished job folders live there.
+- `unrar` on `PATH` for `.rar` exports (the Docker image includes it; on Windows the existing UnRAR auto-detection is
+  used). Direct `.xml` / `.xml.gz` uploads do not need it.
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `MDB_FILL_JAVA` | auto-detect | Java executable used by the fill job |
+| `MDB_FILL_CLASSES` | `tools/mdb-fill/classes` | Compiled `MdbFill.class` directory |
+| `MDB_FILL_JAR` | `tools/mdb-fill/jackcess-5.0.4.jar` | Jackcess classpath |
+| `MDB_FILL_HEAP` | `-Xmx448m` | JVM heap for the writer (lower it to fit small hosts) |
+| `NETACT_TMP_DIR` | OS temp dir | Uploads, job folders and ZIPs (must be writable) |
+| `MAX_UPLOAD_MB` | `4096` | Maximum assembled upload size |
+| `MAX_EXTRACT_MB` | `3072` | Member size cap for the buffered archive fallbacks |
+
+Finished jobs stay downloadable as ZIP for 12 hours (the intermediate `.mdb` is deleted right after zipping). Jobs are
+kept in memory: restarting the server cancels a running fill and removes its temp folder. ZIP uploads are rejected -
+upload the XML itself, an XML.gz, or a RAR.
 
 ## Output rules (verified against the hand-made 700, 1800 and 2600 XMLs)
 
@@ -94,11 +134,12 @@ falls back to the LTE classes (a couple of names, e.g. `angle`, exist in both bu
 ## Self-check
 
 ```bash
-npm run verify       # CSV + expected XML pairs (700/1800/2600, pci*, ho, actions and 5g)
-npm run test:fetch   # the link downloader (local imitation server: redirects, Drive warning page, private file, ...)
-npm run test:mdb     # reads the real cached.mdb if present (LTE)
-npm run test:big     # the real local archives: parity / inspect / xml / mdb (edit paths at the top of scripts/test-big.ts)
-npm run bench        # synthetic large dump: times wantedDistNames / loadDb / buildChanges
+npm run verify        # CSV + expected XML pairs (700/1800/2600, pci*, ho, actions and 5g)
+npm run test:fetch    # the link downloader (local imitation server: redirects, Drive warning page, private file, ...)
+npm run test:mdb      # the committed .mdb fixture, plus the real cached.mdb if present (LTE)
+npm run test:filebuffer # file-backed Buffer semantics against a real Buffer and MDBReader
+npm run test:big      # the real local archives: parity / inspect / xml / mdb (edit paths at the top of scripts/test-big.ts)
+npm run bench         # synthetic large dump: times wantedDistNames / loadDb / buildChanges
 ```
 
 For every `samples/<name>.csv` with a `samples/<name>.expected.xml`, this builds a stand-in database in which exactly the
@@ -120,6 +161,7 @@ src/components/     UI
 samples/            700 / 1800 / 2600: CSV, hand-made expected XML, and *.test-db.xml (SYNTHETIC databases for trying the UI)
 scripts/verify.ts   regression check (npm run verify)
 scripts/test-big.ts real-archive validation (npm run test:big)
+scripts/test-filebuffer.ts  file-backed Buffer tests (npm run test:filebuffer)
 scripts/bench.ts    performance benchmark (npm run bench)
 ```
 
@@ -133,8 +175,9 @@ surfaced in the UI as a "file too large" error). Deploy to Railway, Render, Fly.
 
 The included `Dockerfile` builds a production image that runs `next start` with the full production dependency tree
 (safe for the `node-unrar-js` WASM and the `exceljs` / `mdb-reader` external packages), drops the build cache and the
-dev-only packages, and **bundles native `unrar` 7.x** (from rarlab) - multi-GB `.rar` dumps are then streamed straight
-into the scanner, no memory-capped WASM fallback. `.dockerignore` keeps `cached.mdb` / `cached.rar` out of the image.
+dev-only packages, **bundles native `unrar` 7.x** (from rarlab) - multi-GB `.rar` dumps are then streamed straight
+into the scanner, no memory-capped WASM fallback - and runs as the unprivileged `node` user with local file paths
+disabled (`ALLOW_LOCAL_FILES=false`). `.dockerignore` keeps `cached.mdb` / `cached.rar` out of the image.
 On plain-Node hosts without Docker, install an `unrar` binary on `PATH` (or point `UNRAR_PATH` at it) for the same
 streaming path; otherwise the WASM fallback applies and `.rar` archives above `MAX_WASM_RAR_MB` (default 1500 MB) are
 rejected with a clear error.

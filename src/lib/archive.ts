@@ -40,33 +40,6 @@ const WASM_RAR_LIMIT = (Number(process.env.MAX_WASM_RAR_MB) || 1500) * 1024 * 10
 const toBuf = (c: Buffer | Uint8Array): Buffer =>
   Buffer.isBuffer(c) ? c : Buffer.from(c.buffer, c.byteOffset, c.byteLength);
 
-const COALESCE_BYTES = 2 * 1024 * 1024;
-
-/**
- * Groups small stream chunks into ~2 MB blocks. unrar / gunzip / zip deliver 16-64 KB pieces, and
- * every piece otherwise costs an async-iterator hop plus a Buffer.concat inside the XML parser.
- */
-async function* coalesce(src: AsyncIterable<Buffer | Uint8Array>, target = COALESCE_BYTES): AsyncGenerator<Buffer> {
-  let parts: Buffer[] = [];
-  let len = 0;
-  for await (const c0 of src) {
-    const c = toBuf(c0);
-    if (c.length === 0) continue;
-    if (len === 0 && c.length >= target) {
-      yield c;
-      continue;
-    }
-    parts.push(c);
-    len += c.length;
-    if (len >= target) {
-      yield parts.length === 1 ? parts[0] : Buffer.concat(parts, len);
-      parts = [];
-      len = 0;
-    }
-  }
-  if (len > 0) yield parts.length === 1 ? parts[0] : Buffer.concat(parts, len);
-}
-
 async function* once(buf: Buffer): AsyncGenerator<Buffer> {
   yield buf;
 }
@@ -82,7 +55,7 @@ const streamToAsync = (s: unknown): AsyncIterable<Buffer> => {
 };
 
 const gunzipSource = (src: AsyncIterable<Buffer | Uint8Array>): Readable => {
-  const gzip = createGunzip();
+  const gzip = createGunzip({ chunkSize: 1024 * 1024 });
   const rs = Readable.from(src, { objectMode: false });
   rs.on("error", (e) => gzip.destroy(e));
   rs.pipe(gzip);
@@ -403,7 +376,7 @@ export async function ingestStream(
     case "xml":
       // `expected` is 0 when the member came from a zip/rar stream (no size known); the sink can
       // then report the byte count it reads instead of guessing.
-      await sinks.xml(coalesce(replay), name, expected);
+      await sinks.xml(replay, name, expected);
       return;
     case "mdb": {
       const spilled = await spillToTemp(replay);
@@ -478,9 +451,9 @@ export async function ingest(
 
   if (kind === "xml") {
     if (stat?.isFile()) {
-      await sinks.xml(coalesce(streamToAsync(fs.createReadStream(filePath!, { highWaterMark: 4 * 1024 * 1024 }))), name, stat.size);
+      await sinks.xml(streamToAsync(fs.createReadStream(filePath!, { highWaterMark: 4 * 1024 * 1024 })), name, stat.size);
     } else {
-      await sinks.xml(coalesce(once(data)), name, data.length);
+      await sinks.xml(once(data), name, data.length);
     }
   } else if (kind === "mdb") {
     // A local file / chunked upload is already on disk - read it in place instead of copying.

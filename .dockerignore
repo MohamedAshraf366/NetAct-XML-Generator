@@ -7,6 +7,8 @@ out
 cached.mdb
 cached.rar
 *.test-db.xml
+tools/jre
+.tmp
 samples
 scripts
 .env*

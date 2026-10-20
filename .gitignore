@@ -12,3 +12,9 @@ next-env.d.ts
 cached.mdb
 cached.rar
 *.test-db.xml
+
+# Optional portable Java runtime for local /fill runs
+tools/jre/
+
+# Local fill/upload scratch space
+.tmp/

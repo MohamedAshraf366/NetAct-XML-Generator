@@ -1,3 +1,4 @@
+import Link from "next/link";
 import Converter from "@/components/Converter";
 import ThemeToggle from "@/components/ThemeToggle";
 import { ALL_PARAM_NAMES, LTE_PARAMS, NR_PARAMS } from "@/lib/config";
@@ -40,7 +41,12 @@ export default function Home() {
               <p className="truncate text-xs text-slate-500 dark:text-slate-400">CSV / Excel → NetAct XML</p>
             </div>
           </div>
-          <ThemeToggle />
+          <div className="flex shrink-0 items-center gap-2">
+            <Link href="/fill" className="btn-ghost !px-3 !py-1.5 text-xs">
+              Fill a dump
+            </Link>
+            <ThemeToggle />
+          </div>
         </header>
 
         <section className="mb-8 max-w-3xl animate-fade-up sm:mb-10">

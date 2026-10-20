@@ -1,0 +1,14 @@
+const fs=require('fs');
+const read=p=>{const b=fs.readFileSync(p);return b[0]===0xFF&&b[1]===0xFE?JSON.parse(b.subarray(2).toString('utf16le')):JSON.parse(b.toString('utf8').replace(/^\uFEFF/,''));};
+const ours=read('D:/netact-tmp/ours-counts.json');const ref=read('D:/netact-tmp/ref-counts.json');
+const keys=[...new Set([...Object.keys(ours),...Object.keys(ref)])];
+const sum=o=>Object.values(o).reduce((a,b)=>a+(b>0?b:0),0);
+const ne=o=>Object.values(o).filter(v=>v>0).length;
+console.log('ours: tables',Object.keys(ours).length,'nonempty',ne(ours),'rows',sum(ours));
+console.log('ref : tables',Object.keys(ref).length,'nonempty',ne(ref),'rows',sum(ref));
+const onlyOurs=keys.filter(k=>(ours[k]||0)>0&&!(ref[k]>0));
+const onlyRef=keys.filter(k=>(ref[k]||0)>0&&!(ours[k]>0));
+console.log('\nonly ours>0:',onlyOurs.length,onlyOurs.slice(0,25).map(k=>`${k}=${ours[k]}`).join(', '));
+console.log('\nonly ref>0:',onlyRef.length,onlyRef.slice(0,40).map(k=>`${k}=${ref[k]}`).join(', '));
+const diffs=keys.filter(k=>(ours[k]>0||ref[k]>0)).map(k=>({k,o:ours[k]||0,r:ref[k]||0,d:(ours[k]||0)-(ref[k]||0)})).sort((a,b)=>Math.abs(b.d)-Math.abs(a.d));
+console.log('\ntop diffs:');for(const x of diffs.slice(0,30))console.log(String(x.o).padStart(8),String(x.r).padStart(8),String(x.d).padStart(9),x.k);

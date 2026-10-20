@@ -1,0 +1,2 @@
+const fs=require('fs');const M=require('mdb-reader').default;const db=new M(fs.readFileSync('C:/Users/ELBOSTAN/AppData/Local/Temp/opencode/dbinspect/Dump 4G+5G.mdb'));
+for(const n of ['IMPORT_CLASS_FILTER','IMPORT_PARAMETER_FILTER','IMPORT_LIST_MAPPING']){const t=db.getTable(n);const cols=t.getColumns().map(c=>c.name);const rows=t.getData().filter(r=>JSON.stringify(r).includes('ADCE'));console.log('\n'+n,cols.join(','),'hits',rows.length);for(const r of rows.slice(0,8))console.log(JSON.stringify(r));}

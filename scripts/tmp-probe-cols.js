@@ -1,0 +1,3 @@
+const fs=require('fs');const M=require('mdb-reader').default;const db=new M(fs.readFileSync('C:/Users/ELBOSTAN/AppData/Local/Temp/opencode/dbinspect/18-10-2026.mdb'));
+for(const [n,kw] of [['A_TRX',/bcx|logical/i],['A_MNL_MRBTS_MNL_MNLENT_FMCADM',/unserved|failure/i],['A_LTE_MRBTS_LNBTS_LNCEL',/^raPreGrASize$|assignedRa/i]]){const c=db.getTable(n).getColumns().map(x=>x.name).filter(x=>kw.test(x));console.log(n,JSON.stringify(c));}
+console.log('LNCEL raPreGrASize?',db.getTable('A_LTE_MRBTS_LNBTS_LNCEL').getColumns().some(c=>c.name==='raPreGrASize'));

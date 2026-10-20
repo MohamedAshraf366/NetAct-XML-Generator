@@ -6,18 +6,16 @@ import { fileURLToPath } from "node:url";
 
 /**
  * Downloads the database from a link the user pastes - a Google Drive share link or any direct http(s) link.
- * Also accepts local file paths (file:// URL or an absolute path like C:\dumps\file.rar) when running
- * locally; on hosted platforms (Vercel / Netlify) they are disabled unless ALLOW_LOCAL_FILES=true.
+ * Also accepts local file paths (file:// URL or an absolute path like C:\dumps\file.rar) only when
+ * the server operator opts in with ALLOW_LOCAL_FILES=true.
  * Runs on the server, so it is guarded: private/loopback addresses are blocked unless ALLOW_PRIVATE_URLS=true.
  *
- * env: MAX_DB_MB (default 1024)   ALLOW_PRIVATE_URLS (default false)   ALLOW_LOCAL_FILES (default: allowed when not hosted)
+ * env: MAX_DB_MB (default 1024)   ALLOW_PRIVATE_URLS (default false)   ALLOW_LOCAL_FILES (default false)
  */
 const maxBytes = () => (Number(process.env.MAX_DB_MB) || 1024) * 1024 * 1024;
 const allowPrivate = () => process.env.ALLOW_PRIVATE_URLS === "true";
-const allowLocal = () =>
-  process.env.ALLOW_LOCAL_FILES !== undefined
-    ? process.env.ALLOW_LOCAL_FILES === "true"
-    : !process.env.VERCEL && !process.env.NETLIFY;
+const allowLocal = () => process.env.ALLOW_LOCAL_FILES === "true";
+const LOCAL_READ_ERROR = "The local file could not be read.";
 const driveBase = () => process.env.DRIVE_DOWNLOAD_BASE ?? "https://drive.usercontent.google.com/download";
 
 export type Fetched = { name: string; data: Buffer; path?: string; bytes?: number };
@@ -128,25 +126,29 @@ async function readLocal(p: string): Promise<Fetched> {
   try {
     real = p.startsWith("file:") ? fileURLToPath(new URL(p)) : path.resolve(p);
   } catch {
-    throw new Error("This is not a valid file path.");
+    throw new Error(LOCAL_READ_ERROR);
   }
   let st;
   try {
     st = await fsp.stat(real);
   } catch {
-    throw new Error(`Local file not found: ${real}`);
+    throw new Error(LOCAL_READ_ERROR);
   }
-  if (!st.isFile()) throw new Error(`Not a file: ${real}`);
+  if (!st.isFile()) throw new Error(LOCAL_READ_ERROR);
   if (st.size > maxBytes()) throw new Error(`The file is larger than the ${Math.round(maxBytes() / 1048576)} MB limit.`);
   // Only a prefix is loaded; the archive/mdb readers stream the rest straight from disk.
-  const fh = await fsp.open(real, "r");
+  const fh = await fsp.open(real, "r").catch(() => {
+    throw new Error(LOCAL_READ_ERROR);
+  });
   let prefix: Buffer;
   try {
     const buf = Buffer.alloc(64);
     const { bytesRead } = await fh.read(buf, 0, 64, 0);
     prefix = buf.subarray(0, bytesRead);
+  } catch {
+    throw new Error(LOCAL_READ_ERROR);
   } finally {
-    await fh.close();
+    await fh.close().catch(() => {});
   }
   return { name: path.basename(real), data: prefix, path: real, bytes: st.size };
 }

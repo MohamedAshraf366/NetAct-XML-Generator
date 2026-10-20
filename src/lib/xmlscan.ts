@@ -99,7 +99,7 @@ export type XmlTagSink = {
    */
   onTag(tag: Buffer, selfClose: boolean): boolean;
   /** The body between the tag's `>` and `</managedObject>` - only for objects whose onTag returned true. */
-  onBody(body: Buffer): void;
+  onBody(body: Buffer): void | Promise<void>;
 };
 
 const OPEN_TAG_B = Buffer.from("<managedObject", "latin1");
@@ -225,7 +225,7 @@ export async function parseXmlStream(src: AsyncIterable<Buffer | Uint8Array>, si
           chunks.push(toBuf(buf));
           chunkBytes += buf.length;
         }
-        if (chunks.length > 0) sink.onBody(chunks.length === 1 ? chunks[0] : Buffer.concat(chunks, chunkBytes));
+        if (chunks.length > 0) await sink.onBody(chunks.length === 1 ? chunks[0] : Buffer.concat(chunks, chunkBytes));
         break;
       }
       bodyStart = 0;
@@ -236,7 +236,7 @@ export async function parseXmlStream(src: AsyncIterable<Buffer | Uint8Array>, si
       chunks.push(buf.subarray(bodyStart, q));
       chunkBytes += q - bodyStart;
     }
-    sink.onBody(chunks.length === 0 ? EMPTY : chunks.length === 1 ? chunks[0] : Buffer.concat(chunks, chunkBytes));
+    await sink.onBody(chunks.length === 0 ? EMPTY : chunks.length === 1 ? chunks[0] : Buffer.concat(chunks, chunkBytes));
     chunks = [];
     chunkBytes = 0;
     pos = q + CLOSE_TAG_B.length;

@@ -1,6 +1,7 @@
 /** npm run test:fetch - checks the "paste a link" downloader against a local imitation server. */
 import fs from "node:fs";
 import http from "node:http";
+import os from "node:os";
 import path from "node:path";
 import zlib from "node:zlib";
 import JSZip from "jszip";
@@ -42,6 +43,8 @@ const server = http.createServer((req, res) => {
   const send = (code: number, body: Buffer | string, h: Record<string, string> = {}) => { res.writeHead(code, h); res.end(body); };
   switch (u.pathname) {
     case "/plain.xml": return send(200, xmlDb, { "content-type": "application/xml" });
+    case "/plain.xml.gz":
+      return send(200, zlib.gzipSync(xmlDb), { "content-type": "application/gzip", "content-disposition": 'attachment; filename="plain.xml.gz"' });
     case "/go": return send(302, "", { location: "/blob" });
     case "/blob": return send(200, rarBuf, { "content-type": "application/octet-stream", "content-disposition": 'attachment; filename="11-10-2026.rar"' });
     case "/drive/download": // big-file warning page first, real file once the form is confirmed
@@ -81,6 +84,44 @@ const rejects = async (p: Promise<unknown>, re: RegExp) => { try { await p; retu
   ok(r.startsWith("ok:"), "localhost link blocked by default", r);
   process.env.ALLOW_PRIVATE_URLS = "true";
 
+  // --- local paths are opt-in (ALLOW_LOCAL_FILES)
+  const localDir = fs.mkdtempSync(path.join(os.tmpdir(), "netact-local-"));
+  const localFile = path.join(localDir, "db.xml");
+  fs.writeFileSync(localFile, xmlDb);
+
+  delete process.env.ALLOW_LOCAL_FILES;
+  r = await rejects(fetchDb(localFile), /disabled/);
+  ok(r.startsWith("ok:"), "local file paths disabled by default", r.slice(0, 80));
+  process.env.ALLOW_LOCAL_FILES = "false";
+  r = await rejects(fetchDb(localFile), /disabled/);
+  ok(r.startsWith("ok:"), "ALLOW_LOCAL_FILES=false keeps local paths disabled", r.slice(0, 80));
+
+  process.env.ALLOW_LOCAL_FILES = "true";
+  let local = await fetchDb(localFile);
+  ok(
+    local.name === "db.xml" && local.path === path.resolve(localFile) && local.bytes === xmlDb.length,
+    "local file path works when opted in",
+    local.name,
+  );
+  const localGzFile = path.join(localDir, "db.xml.gz");
+  fs.writeFileSync(localGzFile, zlib.gzipSync(xmlDb));
+  local = await fetchDb(localGzFile);
+  ok(local.name === "db.xml.gz" && local.path === path.resolve(localGzFile), "local gzip path works when opted in", local.name);
+
+  const gzParsed = await readInput("2600.csv", csv);
+  const gzRows = canonicalize(gzParsed.header, gzParsed.rows, ["mrbtsId", "lnBtsId", "lnCelId", "lnRelId", ...PARAM_NAMES]);
+  const gzParams = DEFAULT_PARAM_NAMES.filter((p) => gzRows.header.includes(p));
+  const gzDb = await loadDb([local], wantedDistNames(gzRows.rows, gzParams));
+  const gzOut = writeRaml(buildChanges(gzRows.rows, gzParams, gzDb.objects).changes, "2600");
+  ok(gzOut.replace(/dateTime="[^"]+"/, "") === expected.replace(/dateTime="[^"]+"/, ""), "pipeline from on-disk gzip -> identical to 2600.xml");
+
+  const missing = path.join(localDir, "missing.xml");
+  r = await rejects(fetchDb(missing), /could not be read/);
+  ok(r.startsWith("ok:") && !r.includes(missing) && !/not found/i.test(r), "missing local file gets a generic error", r.slice(0, 80));
+  r = await rejects(fetchDb(localDir), /could not be read/);
+  ok(r.startsWith("ok:") && !r.includes(localDir), "directory gets the same generic error", r.slice(0, 80));
+  delete process.env.ALLOW_LOCAL_FILES;
+
   // --- download scenarios
   let f = await fetchDb(`${base}/plain.xml`);
   ok(f.name === "plain.xml" && f.data.equals(xmlDb), "direct .xml link", f.name);
@@ -110,7 +151,11 @@ const rejects = async (p: Promise<unknown>, re: RegExp) => { try { await p; retu
   delete process.env.MAX_DB_MB;
 
   // --- whole pipeline from a link: download -> read database -> diff -> XML == your 2600.xml
-  for (const [label, url] of [["RAR with no extension in URL", `${base}/go`], ["Drive zip", `https://drive.google.com/file/d/${id}/view`]] as const) {
+  for (const [label, url] of [
+    ["RAR with no extension in URL", `${base}/go`],
+    ["gzip link", `${base}/plain.xml.gz`],
+    ["Drive zip", `https://drive.google.com/file/d/${id}/view`],
+  ] as const) {
     const got = await fetchDb(url);
     const parsed = await readInput("2600.csv", csv);
     const { header, rows } = canonicalize(parsed.header, parsed.rows, ["mrbtsId", "lnBtsId", "lnCelId", "lnRelId", ...PARAM_NAMES]);
@@ -121,6 +166,7 @@ const rejects = async (p: Promise<unknown>, re: RegExp) => { try { await p; retu
     ok(strip(out) === strip(expected), `pipeline from link: ${label} -> identical to your 2600.xml`);
   }
 
+  fs.rmSync(localDir, { recursive: true, force: true });
   server.close();
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);

@@ -3,7 +3,9 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import MDBReader from "mdb-reader";
 import { kindOf, loadDb } from "../src/lib/db";
+import { openFileBuffer } from "../src/lib/fileBuffer";
 import { readInput, canonicalize } from "../src/lib/input";
 import { PARAM_NAMES, DEFAULT_VERSION } from "../src/lib/config";
 import { buildChanges, wantedDistNames } from "../src/lib/diff";
@@ -37,7 +39,25 @@ function assert(condition: boolean, label: string, detail = "") {
   assert(kindOf("test.mdb", Buffer.alloc(10)) === "mdb", "kindOf detects .mdb extension");
   assert(kindOf("test.accdb", Buffer.alloc(10)) === "mdb", "kindOf detects .accdb extension");
 
-  // 2. Test reading cached.mdb if present
+  // 2. Read the committed fixture through the file-backed buffer. This runs everywhere and
+  // catches a mdb-reader upgrade that starts using a Buffer API FileBuffer does not provide.
+  const fixturePath = path.join(__dirname, "..", "samples", "fixtures", "mdb-reader-test.mdb");
+  assert(fs.existsSync(fixturePath), "Committed .mdb fixture exists");
+  if (fs.existsSync(fixturePath)) {
+    const st = fs.statSync(fixturePath);
+    const fb = openFileBuffer(fixturePath, st.size);
+    try {
+      const reader = new MDBReader(fb as unknown as Buffer);
+      const tables = reader.getTableNames({ normalTables: true, systemTables: false, linkedTables: false });
+      assert(tables.includes("Table1"), "MDBReader reads fixture tables", tables.join(", "));
+      const rows = reader.getTable("Table1").getData();
+      assert(rows.length === 2 && rows[0].A === "a" && rows[1].C === 2, "MDBReader reads fixture rows", JSON.stringify(rows));
+    } finally {
+      fb.close();
+    }
+  }
+
+  // 3. Test reading cached.mdb if present
   const mdbPath = path.join(__dirname, "..", "cached.mdb");
   if (!fs.existsSync(mdbPath)) {
     console.log("\nNote: cached.mdb not found on disk, skipping live database tests.");
@@ -74,7 +94,7 @@ function assert(condition: boolean, label: string, detail = "") {
   const strip = (s: string) => s.replace(/dateTime="[^"]+"/, "");
   assert(strip(out) === strip(expXml), "Generated XML exactly equals 700.expected.xml");
 
-  // 3. Test fallback parameter mapping
+  // 4. Test fallback parameter mapping
   const customParamDefs = {
     customTilt: { cls: "NOKLTE:LNCEL", suffix: "", defaultOn: true },
   };
