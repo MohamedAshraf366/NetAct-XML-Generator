@@ -31,7 +31,8 @@ java -Xmx448m -Duser.timezone=UTC -cp "classes;jackcess-5.0.4.jar" MdbFill path/
 
 Use `:` instead of `;` on Linux/macOS. `src/lib/fill.ts` passes the heap, classpath and UTC timezone itself, and
 finds Java through `MDB_FILL_JAVA`, `JAVA_HOME`, a portable `tools/jre`, common install locations, or `PATH`. Set
-`MDB_FILL_CLASSES` / `MDB_FILL_JAR` only when the defaults do not fit. The writer heap defaults to `-Xmx1g`.
+`MDB_FILL_CLASSES` / `MDB_FILL_JAR` only when the defaults do not fit. The writer heap defaults to `-Xmx448m`; rows are
+inserted in batches of 500 (`MDB_FILL_BATCH`, also `MDB_FILL_GLOBAL_BATCH`).
 
 ## Third-party
 

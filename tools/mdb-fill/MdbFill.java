@@ -33,10 +33,21 @@ import java.util.concurrent.BlockingQueue;
  * stderr: "ROWS <n>" progress, "ERR <table> <why>" for skipped rows/values, "DONE <n>" at the end.
  */
 public final class MdbFill {
-  private static final int BATCH = 20_000;
-  private static final int GLOBAL_BATCH = 1_000_000;
+  private static final int BATCH = intEnv("MDB_FILL_BATCH", 500);
+  private static final int GLOBAL_BATCH = intEnv("MDB_FILL_GLOBAL_BATCH", 1_000_000);
   private static final String EOF = new String(new char[] {0});
   private static final int READ_QUEUE = 50_000;
+
+  private static int intEnv(String key, int fallback) {
+    String raw = System.getenv(key);
+    if (raw == null || raw.isBlank()) return fallback;
+    try {
+      int value = Integer.parseInt(raw.trim());
+      return Math.max(1, Math.min(value, 100_000));
+    } catch (NumberFormatException e) {
+      return fallback;
+    }
+  }
 
   private static final class ColumnInfo {
     final String name;
@@ -323,21 +334,40 @@ public final class MdbFill {
     stats.bucketFlushes[bucket]++;
     stats.bucketRows[bucket] += size;
     try {
-      state.table.addRows(rows);
-      stats.rows += size;
-    } catch (Exception e) {
-      if (e instanceof BatchUpdateException) stats.fallbackBatches++;
-      int done = e instanceof BatchUpdateException ? ((BatchUpdateException) e).getUpdateCount() : 0;
-      stats.rows += done;
-      stats.fallbackRows += size - done;
-      for (int i = done; i < size; i++) {
+      int from = 0;
+      while (from < size) {
         try {
-          state.table.addRow(rows.get(i));
-          stats.rows++;
-        } catch (Exception rowError) {
-          stats.errors++;
-          String why = rowError.getMessage() == null ? rowError.getClass().getSimpleName() : rowError.getMessage().replace('\n', ' ');
-          out.println("ERR " + state.name + " " + why);
+          state.table.addRows(from == 0 ? rows : rows.subList(from, size));
+          stats.rows += size - from;
+          break;
+        } catch (Exception e) {
+          if (e instanceof BatchUpdateException) {
+            stats.fallbackBatches++;
+            int ok = ((BatchUpdateException) e).getUpdateCount();
+            if (ok < 0) ok = 0;
+            stats.rows += ok;
+            from += ok;
+            if (from >= size) break;
+            stats.errors++;
+            stats.fallbackRows++;
+            String why = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage().replace('\n', ' ');
+            out.println("ERR " + state.name + " " + why);
+            from++;
+            continue;
+          }
+          // A non-batch failure has no useful partial count: retry the remainder row by row.
+          stats.fallbackRows += size - from;
+          for (int i = from; i < size; i++) {
+            try {
+              state.table.addRow(rows.get(i));
+              stats.rows++;
+            } catch (Exception rowError) {
+              stats.errors++;
+              String why = rowError.getMessage() == null ? rowError.getClass().getSimpleName() : rowError.getMessage().replace('\n', ' ');
+              out.println("ERR " + state.name + " " + why);
+            }
+          }
+          break;
         }
       }
     } finally {

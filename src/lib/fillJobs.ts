@@ -1,12 +1,12 @@
 import { randomBytes } from "node:crypto";
 import fs from "node:fs";
-import fsp from "node:fs/promises";
+import fsp, { type FileHandle } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
 import yazl from "yazl";
 import { ingest, kindOf } from "./archive";
-import { buildFillSchema, fillDatabase, type FillResult } from "./fill";
+import { buildFillSchema, defaultFillWorkers, fillDatabase, type FillResult } from "./fill";
 import { releaseMemorySoon } from "./mem";
 import { removeUploads } from "./uploads";
 
@@ -254,6 +254,103 @@ async function readPrefix(filePath: string, n: number): Promise<Buffer> {
   }
 }
 
+async function availableBytes(dir: string): Promise<number | null> {
+  try {
+    const s = await fsp.statfs(dir);
+    return Number(s.bavail) * Number(s.bsize);
+  } catch {
+    return null;
+  }
+}
+
+class DiskSpaceError extends Error {}
+
+async function gzipUnpackedSize(file: string): Promise<number | null> {
+  try {
+    const st = await fsp.stat(file);
+    if (st.size < 18) return null;
+    const fh = await fsp.open(file, "r");
+    try {
+      const buf = Buffer.alloc(4);
+      await fh.read(buf, 0, 4, st.size - 4);
+      const size = buf.readUInt32LE(0);
+      return size > st.size ? size : null;
+    } finally {
+      await fh.close();
+    }
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Decompress a gz/rar upload once so the fill can use the seekable, parallel path.  The archive
+ * is streamed (never buffered), and writing stops early if the volume runs low instead of filling
+ * the disk.  Returns null when the archive holds no XML.
+ */
+async function materializeXml(
+  name: string,
+  head: Buffer,
+  archive: string,
+  dest: string,
+  dir: string,
+  expected: number | null,
+): Promise<{ path: string; size: number } | null> {
+  const first = await availableBytes(dir);
+  if (first !== null && first < (expected ?? 0) + 256 * 1024 * 1024) throw new DiskSpaceError("Not enough free disk space to unpack the export.");
+
+  let got = false;
+  let size = 0;
+  let checked = 0;
+  const holder: { fh: FileHandle | null } = { fh: null };
+  try {
+    await ingest(
+      name,
+      head,
+      {
+        xml: async (source) => {
+          if (got) {
+            for await (const _ of source) { /* drain duplicate XML member */ }
+            return;
+          }
+          got = true;
+          holder.fh = await fsp.open(dest, "w");
+          for await (const c0 of source) {
+            const c = Buffer.isBuffer(c0) ? c0 : Buffer.from(c0.buffer, c0.byteOffset, c0.byteLength);
+            let off = 0;
+            while (off < c.length) {
+              const r = await holder.fh.write(c, off, c.length - off);
+              off += r.bytesWritten;
+              size += r.bytesWritten;
+            }
+            if (size - checked >= 64 * 1024 * 1024) {
+              checked = size;
+              const free = await availableBytes(dir);
+              if (free !== null && free < 128 * 1024 * 1024) throw new DiskSpaceError("Ran out of disk space while unpacking the export.");
+            }
+          }
+          await holder.fh.close();
+          holder.fh = null;
+        },
+        mdb: async () => {},
+      },
+      0,
+      archive,
+    );
+  } catch (e) {
+    await holder.fh?.close().catch(() => {});
+    holder.fh = null;
+    await fsp.unlink(dest).catch(() => {});
+    throw e;
+  }
+  await holder.fh?.close().catch(() => {});
+  if (!got) {
+    await fsp.unlink(dest).catch(() => {});
+    return null;
+  }
+  return { path: dest, size };
+}
+
 async function run(job: Job): Promise<void> {
   job.phase = "prepare";
   job.startedAt = Date.now();
@@ -279,11 +376,10 @@ async function run(job: Job): Promise<void> {
   }
   const xmlSize = await fsp.stat(job.xmlPath).then((s) => s.size).catch(() => 0);
   const configuredWorkers = Number(process.env.MDB_FILL_WORKERS);
-  const splitWorkers = Number.isFinite(configuredWorkers)
-    ? configuredWorkers
-    : Math.min(4, Math.max(1, os.availableParallelism() - 2));
+  const splitWorkers = Number.isFinite(configuredWorkers) ? configuredWorkers : defaultFillWorkers();
   const workerFile = process.env.MDB_FILL_WORKER ?? path.join(process.cwd(), "src", "lib", "fillWorker.ts");
-  const splitXml = kind === "xml" && xmlSize >= 64 * 1024 * 1024 && splitWorkers > 1 && fs.existsSync(/* turbopackIgnore: true */ workerFile);
+  const canSplit = splitWorkers > 1 && fs.existsSync(/* turbopackIgnore: true */ workerFile);
+  const splitXml = kind === "xml" && xmlSize >= 64 * 1024 * 1024 && canSplit;
 
   job.totalBytes = kind === "xml" ? xmlSize : 0;
   job.phase = "fill";
@@ -298,37 +394,69 @@ async function run(job: Job): Promise<void> {
     }
   };
 
-  const acc: { result?: FillResult } = {};
+  const progress = (p: { objects: number; rows: number; bytes?: number }) => {
+    job.objects = p.objects;
+    job.rows = p.rows;
+    if (p.bytes !== undefined) job.bytes = p.bytes;
+  };
 
-  await ingest(
-    job.xmlName,
-    xmlHead,
-    {
-      xml: async (source, _name, expected) => {
-        if (expected > 0) job.totalBytes = expected;
-        if (splitXml) (source as { destroy?: () => void }).destroy?.();
-        acc.result = await fillDatabase(
-          {
-            templatePath: mdbPath,
-            outPath: mdbPath,
-            xml: counted(source),
-            xmlPath: splitXml ? job.xmlPath : undefined,
-            onProgress: (p) => {
-              job.objects = p.objects;
-              job.rows = p.rows;
-              if (p.bytes !== undefined) job.bytes = p.bytes;
+  let prepared: { path: string; size: number } | null = null;
+  if ((kind === "gz" || kind === "rar") && canSplit) {
+    const dest = path.join(job.dir, `${baseName(job.xmlName)}.unpacked.xml`);
+    try {
+      prepared = await materializeXml(job.xmlName, xmlHead, job.xmlPath, dest, job.dir, kind === "gz" ? await gzipUnpackedSize(job.xmlPath) : null);
+    } catch (e) {
+      if (!(e instanceof DiskSpaceError)) throw e;
+      console.warn(e.message + " Streaming the archive instead.");
+    }
+    if (prepared) job.totalBytes = prepared.size;
+  }
+
+  const acc: { result?: FillResult } = {};
+  if (prepared) {
+    const src = fs.createReadStream(/* turbopackIgnore: true */ prepared.path, { highWaterMark: 4 * 1024 * 1024 });
+    try {
+      acc.result = await fillDatabase(
+        {
+          templatePath: mdbPath,
+          outPath: mdbPath,
+          xml: counted(src),
+          xmlPath: prepared.path,
+          onProgress: progress,
+        },
+        schema,
+      );
+    } finally {
+      src.destroy();
+      await fsp.unlink(prepared.path).catch(() => {});
+    }
+  } else {
+    await ingest(
+      job.xmlName,
+      xmlHead,
+      {
+        xml: async (source, _name, expected) => {
+          if (expected > 0) job.totalBytes = expected;
+          if (splitXml) (source as { destroy?: () => void }).destroy?.();
+          acc.result = await fillDatabase(
+            {
+              templatePath: mdbPath,
+              outPath: mdbPath,
+              xml: counted(source),
+              xmlPath: splitXml ? job.xmlPath : undefined,
+              onProgress: progress,
             },
-          },
-          schema,
-        );
+            schema,
+          );
+        },
+        mdb: async () => {
+          throw new Error("The archive contains an Access database, not a RAML XML.");
+        },
       },
-      mdb: async () => {
-        throw new Error("The archive contains an Access database, not a RAML XML.");
-      },
-    },
-    0,
-    job.xmlPath,
-  );
+      0,
+      job.xmlPath,
+    );
+  }
 
   const fillResult = acc.result;
   if (!fillResult) throw new Error("No RAML XML was found in the upload.");

@@ -1034,7 +1034,7 @@ export function resolveJava(): string {
       const direct = findJavaBinary(root);
       if (direct) return direct;
       for (const vendor of vendors) {
-        const vendorDir = path.join(root, vendor);
+        const vendorDir = path.join(/* turbopackIgnore: true */ root, vendor);
         const found =
           findJavaBinary(vendorDir) ??
           childDirs(vendorDir)
@@ -1111,6 +1111,8 @@ async function fillDatabaseParallel(opts: FillOptions, schema: FillSchema, cfg: 
   const size = fs.statSync(xmlPath).size;
   const points = await xmlSplitPoints(xmlPath, size, cfg.workers);
 
+  const workers: ReturnType<typeof spawn>[] = [];
+  let javaExited = false;
   const child = spawn(cfg.java, [cfg.heap, "-XX:+UseSerialGC", "-Duser.timezone=UTC", "-cp", cfg.cp, "MdbFill", opts.outPath], {
     stdio: ["pipe", "ignore", "pipe"],
   });
@@ -1128,6 +1130,10 @@ async function fillDatabaseParallel(opts: FillOptions, schema: FillSchema, cfg: 
       for (const m of s.matchAll(/(?:^|\n)ERR (\S+)/g)) errorTables.set(m[1], (errorTables.get(m[1]) ?? 0) + 1);
       if (errorSamples.length < 20) for (const line of s.split(/\r?\n/)) if (line.startsWith("ERR ")) errorSamples.push(line);
     }
+  });
+  child.on("exit", () => {
+    javaExited = true;
+    for (const w of workers) w.kill();
   });
   child.stdin!.on("error", () => {});
   child.stdin!.setMaxListeners(0);
@@ -1173,7 +1179,6 @@ async function fillDatabaseParallel(opts: FillOptions, schema: FillSchema, cfg: 
   let progressRows = 0;
   let progressBytes = 0;
   let lastProgress = 0;
-  const workers: ReturnType<typeof spawn>[] = [];
   const progress = points.slice(1).map(() => ({ objects: 0, rows: 0, bytes: 0 }));
   const done = points.slice(1).map((end, i) => {
     const start = points[i];
@@ -1181,6 +1186,7 @@ async function fillDatabaseParallel(opts: FillOptions, schema: FillSchema, cfg: 
       stdio: ["ignore", "pipe", "pipe", "ipc"],
     });
     workers.push(w);
+    if (javaExited) w.kill();
     w.stdin?.on("error", () => {});
     let carry = "";
     const decoder = new StringDecoder("utf8");
@@ -1269,6 +1275,11 @@ async function fillDatabaseParallel(opts: FillOptions, schema: FillSchema, cfg: 
   }
 }
 
+export function defaultFillWorkers(): number {
+  const cpus = Math.max(1, os.availableParallelism());
+  return cpus < 2 ? 1 : Math.min(4, Math.max(2, cpus - 1));
+}
+
 /** Converts the XML stream into rows and inserts them into `outPath` (a copy of the template). */
 export async function fillDatabase(opts: FillOptions, schema: FillSchema): Promise<FillResult> {
   const { spawn } = await import("node:child_process");
@@ -1276,11 +1287,11 @@ export async function fillDatabase(opts: FillOptions, schema: FillSchema): Promi
   const classes = process.env.MDB_FILL_CLASSES ?? "tools/mdb-fill/classes";
   const jar = process.env.MDB_FILL_JAR ?? "tools/mdb-fill/jackcess-5.0.4.jar";
   const cp = `${classes}${process.platform === "win32" ? ";" : ":"}${jar}`;
-  const heap = process.env.MDB_FILL_HEAP ?? "-Xmx1g";
+  const heap = process.env.MDB_FILL_HEAP ?? "-Xmx448m";
 
   const configured = Number(process.env.MDB_FILL_WORKERS);
   const workers =
-    opts.workers ?? (Number.isFinite(configured) ? configured : Math.min(4, Math.max(1, os.availableParallelism() - 2)));
+    opts.workers ?? (Number.isFinite(configured) ? configured : defaultFillWorkers());
   const workerFile = process.env.MDB_FILL_WORKER ?? path.join(process.cwd(), "src", "lib", "fillWorker.ts");
   if (opts.xmlPath && workers > 1 && fs.existsSync(/* turbopackIgnore: true */ workerFile)) {
     const size = fs.statSync(opts.xmlPath).size;
