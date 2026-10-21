@@ -63,7 +63,7 @@ counted and skipped exactly like NetAct does.
 The job runs inside the Node process, one job at a time, in the background. Large uploads go through the same 8 MB
 chunked upload as the converter, so proxies never see a long request body. The XML is streamed into a Java helper
 that inserts rows with Jackcess; peak memory stays near the Java heap, independent of the XML size. A 3.3 GB export
-fills the 126 MB template into a ~1.3 GB dump in about 25 minutes on a desktop; small hosted instances are slower.
+fills the 126 MB template into a ~1.3 GB dump in about 4 minutes on an 8-thread desktop. A direct `.xml` file is split into four byte ranges and parsed by worker processes; `.xml.gz`/`.rar` inputs use one stream and take substantially longer.
 
 Requirements:
 
@@ -81,7 +81,8 @@ Requirements:
 | `MDB_FILL_JAVA` | auto-detect | Java executable used by the fill job |
 | `MDB_FILL_CLASSES` | `tools/mdb-fill/classes` | Compiled `MdbFill.class` directory |
 | `MDB_FILL_JAR` | `tools/mdb-fill/jackcess-5.0.4.jar` | Jackcess classpath |
-| `MDB_FILL_HEAP` | `-Xmx448m` | JVM heap for the writer (lower it to fit small hosts) |
+| `MDB_FILL_HEAP` | `-Xmx1g` | JVM heap for the writer (lower it to fit small hosts) |
+| `MDB_FILL_WORKERS` | `min(4, CPUs - 2)` | Parallel XML workers; only used for direct, seekable `.xml` files of 64 MB or more |
 | `NETACT_TMP_DIR` | OS temp dir | Uploads, job folders and ZIPs (must be writable) |
 | `MAX_UPLOAD_MB` | `4096` | Maximum assembled upload size |
 | `MAX_EXTRACT_MB` | `3072` | Member size cap for the buffered archive fallbacks |

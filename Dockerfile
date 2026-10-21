@@ -40,6 +40,8 @@ ENV ALLOW_LOCAL_FILES=false
 COPY --from=unrar /unrar /usr/local/bin/unrar
 COPY --chown=node:node --from=build /app/node_modules ./node_modules
 COPY --chown=node:node --from=build /app/.next ./.next
+# The fill worker is spawned with tsx at runtime (seekable XML file -> parallel parse).
+COPY --chown=node:node --from=build /app/src ./src
 COPY --chown=node:node --from=build /app/public ./public
 COPY --chown=node:node --from=build /app/package.json ./package.json
 COPY --chown=node:node --from=build /app/next.config.mjs ./next.config.mjs

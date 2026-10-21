@@ -278,6 +278,12 @@ async function run(job: Job): Promise<void> {
     );
   }
   const xmlSize = await fsp.stat(job.xmlPath).then((s) => s.size).catch(() => 0);
+  const configuredWorkers = Number(process.env.MDB_FILL_WORKERS);
+  const splitWorkers = Number.isFinite(configuredWorkers)
+    ? configuredWorkers
+    : Math.min(4, Math.max(1, os.availableParallelism() - 2));
+  const workerFile = process.env.MDB_FILL_WORKER ?? path.join(process.cwd(), "src", "lib", "fillWorker.ts");
+  const splitXml = kind === "xml" && xmlSize >= 64 * 1024 * 1024 && splitWorkers > 1 && fs.existsSync(/* turbopackIgnore: true */ workerFile);
 
   job.totalBytes = kind === "xml" ? xmlSize : 0;
   job.phase = "fill";
@@ -300,14 +306,17 @@ async function run(job: Job): Promise<void> {
     {
       xml: async (source, _name, expected) => {
         if (expected > 0) job.totalBytes = expected;
+        if (splitXml) (source as { destroy?: () => void }).destroy?.();
         acc.result = await fillDatabase(
           {
             templatePath: mdbPath,
             outPath: mdbPath,
             xml: counted(source),
+            xmlPath: splitXml ? job.xmlPath : undefined,
             onProgress: (p) => {
               job.objects = p.objects;
               job.rows = p.rows;
+              if (p.bytes !== undefined) job.bytes = p.bytes;
             },
           },
           schema,
@@ -324,6 +333,7 @@ async function run(job: Job): Promise<void> {
   const fillResult = acc.result;
   if (!fillResult) throw new Error("No RAML XML was found in the upload.");
 
+  if (job.totalBytes > 0) job.bytes = job.totalBytes;
   job.objects = fillResult.objects;
   job.rows = fillResult.parentRows + fillResult.childRows;
   job.result = {

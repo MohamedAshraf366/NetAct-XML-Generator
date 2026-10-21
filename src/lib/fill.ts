@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import MDBReader from "mdb-reader";
 import { openFileBuffer } from "./fileBuffer";
@@ -13,23 +14,24 @@ import { attrValue, parseXmlStream, type XmlTagSink } from "./xmlscan";
  * `A_<class>`; child rows repeat the parent ids and append `listId`.
  *
  * Rows are streamed to the Java Jackcess helper (tools/mdb-fill), the only MDB writer that runs on
- * Linux.  Values are Base64 so tabs/newlines inside names cannot break the line protocol:
+ * Linux. Values are raw UTF-8, escaped so tabs/newlines/backslashes inside names cannot break the
+ * line protocol (an empty value is `!`, a literal `!` is `\!`, unset columns are omitted):
  *
- *   H <table> <col1> <col2> ...   declare a table's column order (once)
- *   R <table> <v1> <v2> ...       one row
- *   E                             end of input
+ *   H <id> <table> <col1> <col2> ...   declare a table's column order (once)
+ *   R <id> <i>:<v> <i>:<v> ...         one row; i is the column index
+ *   E                                  end of input
  */
 
 export type FillCol = { name: string; type: string; size: number };
-export type FillTable = { name: string; cols: FillCol[]; byLower: Map<string, FillCol> };
+export type FillTable = { name: string; cols: FillCol[]; byLower: Map<string, FillCol>; index: Map<string, number> };
 
 type ChildList = {
   kind: "child";
   table: FillTable;
-  ids: { col: string; key: string }[];
-  listIdCol: string | null;
-  values: Map<string, string>;
-  flatValueCol: string | null;
+  ids: { col: number; key: string }[];
+  listIdCol: number | null;
+  values: Map<string, number>;
+  flatValueCol: number | null;
   meta: MetaCols;
 };
 
@@ -38,11 +40,11 @@ export type FlatList = {
   table: FillTable;
   /** the destination class rule - any object whose distName matches is a candidate */
   re: RegExp;
-  ids: { col: string; key: string }[];
+  ids: { col: number; key: string }[];
   /** lower-case item parameter (and every suffix) -> destination column */
-  values: Map<string, string>;
+  values: Map<string, number>;
   /** for lists of plain scalar values, the single destination column */
-  flatValueCol: string | null;
+  flatValueCol: number | null;
   meta: MetaCols;
 };
 
@@ -53,26 +55,31 @@ export type FlatList = {
 export type FlatParam = {
   table: FillTable;
   re: RegExp;
-  ids: { col: string; key: string }[];
-  col: string;
+  ids: { col: number; key: string }[];
+  col: number;
   meta: MetaCols;
 };
 
-type MetaCols = { status: string | null; modified: string | null; imported: string | null };
+type MetaCols = { status: number | null; modified: number | null; imported: number | null };
+export type FillRow = { table: FillTable; values: Map<number, string | number>; meta: MetaCols };
 
 /** A same-distName block table: NetAct writes one row per parent object, even when empty. */
-export type BlockTable = { table: FillTable; ids: { col: string; key: string }[]; meta: MetaCols };
+export type BlockTable = { table: FillTable; ids: { col: number; key: string }[]; meta: MetaCols };
 
 export type FillClass = {
   dbClass: string;
   table: FillTable;
-  ids: { col: string; key: string }[];
+  ids: { col: number; key: string }[];
   /** captures the distName id values (handles several ids inside one segment, e.g. ADCE-%5d%d) */
   idRe: RegExp;
   /** capture-group offset when the format's first group is the PLMN and not an id column */
   idOffset: number;
-  /** lower-case XML parameter -> table column */
-  cols: Map<string, string>;
+  /** lower-case XML parameter -> table column index */
+  cols: Map<string, number>;
+  /** runtime cache: XML parameter -> column index (false = known unmapped) */
+  paramLookup: Map<string, number | false>;
+  /** runtime cache: XML parameter -> flattened destinations (false = none) */
+  flatParamLookup: Map<string, FlatParam[] | false>;
   lists: Map<string, ChildList>;
   /** type-1 lists with a single value column (for name drift between export versions) */
   scalarLists: ChildList[];
@@ -94,6 +101,8 @@ export type FillSchema = {
   flatParams: Map<string, FlatParam[]>;
   /** resolution cache: "<xmlClass>\n<dnShape>" -> class (or null) */
   cache: Map<string, FillClass | null>;
+  /** XML class with a single possible destination class - no distName-shape lookup needed */
+  simple: Map<string, { cls: FillClass | null; re: RegExp }>;
   stats: { classes: number; lists: number };
 };
 
@@ -106,7 +115,12 @@ const asRows = (reader: MDBReader, name: string): Record<string, unknown>[] =>
 const asTable = (reader: MDBReader, name: string): FillTable => {
   const t = reader.getTable(name);
   const cols: FillCol[] = (t.getColumns() as unknown as FillCol[]).map((c) => ({ name: c.name, type: c.type, size: c.size }));
-  return { name, cols, byLower: new Map(cols.map((c) => [lower(c.name), c])) };
+  return {
+    name,
+    cols,
+    byLower: new Map(cols.map((c) => [lower(c.name), c])),
+    index: new Map(cols.map((c, i) => [lower(c.name), i])),
+  };
 };
 
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -152,9 +166,9 @@ const suffixKeys = (target: string): string[] => {
 
 function metaOf(table: FillTable): MetaCols {
   return {
-    status: table.byLower.get("status")?.name ?? null,
-    modified: table.byLower.get("last_modified")?.name ?? null,
-    imported: table.byLower.get("last_actual_import")?.name ?? null,
+    status: table.index.get("status") ?? null,
+    modified: table.index.get("last_modified") ?? null,
+    imported: table.index.get("last_actual_import") ?? null,
   };
 }
 
@@ -260,16 +274,18 @@ export function buildFillSchema(dbPath: string): FillSchema {
         idOffset = 0;
       }
       const ids = idNames.flatMap((k) => {
-        const col = t.byLower.get(lower(k));
-        return col ? [{ col: col.name, key: lower(k) }] : [];
+        const col = t.index.get(lower(k));
+        return col === undefined ? [] : [{ col, key: lower(k) }];
       });
       if (ids.length !== idNames.length) {
         classes.set(dbClass, null);
         continue;
       }
 
-      const cols = new Map<string, string>();
-      for (const c of t.cols) if (!META.has(lower(c.name))) cols.set(lower(c.name), c.name);
+      const cols = new Map<string, number>();
+      for (let i = 0; i < t.cols.length; i++) {
+        if (!META.has(lower(t.cols[i].name))) cols.set(lower(t.cols[i].name), i);
+      }
 
       const lists = new Map<string, ChildList>();
       const scalarLists: ChildList[] = [];
@@ -278,27 +294,27 @@ export function buildFillSchema(dbPath: string): FillSchema {
         const name = String(r.list);
         const child = table(`A_${r.child_class}`);
         if (!child) continue;
-        const keyCols = new Set(ids.map((i) => lower(i.col)));
-        const listId = child.byLower.get("listid")?.name ?? null;
-        if (listId) keyCols.add("listid");
-        const values = new Map<string, string>();
-        for (const c of child.cols) {
-          const lc = lower(c.name);
+        const keyCols = new Set(ids.map((i) => lower(t.cols[i.col].name)));
+        const listId = child.index.get("listid") ?? null;
+        if (listId !== null) keyCols.add("listid");
+        const values = new Map<string, number>();
+        for (let i = 0; i < child.cols.length; i++) {
+          const lc = lower(child.cols[i].name);
           if (keyCols.has(lc) || META.has(lc)) continue;
-          values.set(lc, c.name);
+          values.set(lc, i);
         }
         const flatValueCol = values.size === 1 ? [...values.values()][0] : (values.get(lower(name)) ?? null);
         const plan: ChildList = {
           kind: "child",
           table: child,
-          ids: ids.map((i) => ({ col: child.byLower.get(lower(i.col))?.name ?? i.col, key: i.key })),
+          ids: ids.map((i) => ({ col: child.index.get(lower(t.cols[i.col].name))!, key: i.key })),
           listIdCol: listId,
           values,
           flatValueCol,
           meta: metaOf(child),
         };
         lists.set(lower(name), plan);
-        if (flatValueCol) scalarLists.push(plan);
+        if (flatValueCol !== null) scalarLists.push(plan);
         listCount++;
       }
 
@@ -310,14 +326,27 @@ export function buildFillSchema(dbPath: string): FillSchema {
         const brule = ruleByClass.get(blockClass);
         if (!bt || !brule) continue;
         const blockIds = brule.ids.flatMap((k) => {
-          const col = bt.byLower.get(lower(k));
-          return col ? [{ col: col.name, key: lower(k) }] : [];
+          const col = bt.index.get(lower(k));
+          return col === undefined ? [] : [{ col, key: lower(k) }];
         });
         if (blockIds.length !== brule.ids.length) continue;
         blocks.push({ table: bt, ids: blockIds, meta: metaOf(bt) });
       }
 
-      classes.set(dbClass, { dbClass, table: t, ids, idRe: capture.re, idOffset, cols, lists, scalarLists, blocks, meta: metaOf(t) });
+      classes.set(dbClass, {
+        dbClass,
+        table: t,
+        ids,
+        idRe: capture.re,
+        idOffset,
+        cols,
+        paramLookup: new Map(),
+        flatParamLookup: new Map(),
+        lists,
+        scalarLists,
+        blocks,
+        meta: metaOf(t),
+      });
     }
 
     // mapping_type=2 lists live in A_<class> tables (often the parent's own table, sometimes a
@@ -331,15 +360,15 @@ export function buildFillSchema(dbPath: string): FillSchema {
       const dest = table(`A_${dbClass}`);
       if (!rule || !dest) continue;
       const ids = rule.ids.flatMap((k) => {
-        const col = dest.byLower.get(lower(k));
-        return col ? [{ col: col.name, key: lower(k) }] : [];
+        const col = dest.index.get(lower(k));
+        return col === undefined ? [] : [{ col, key: lower(k) }];
       });
       if (ids.length !== rule.ids.length) continue;
-      const values = new Map<string, string>();
+      const values = new Map<string, number>();
       for (const target of splitList(r.parameter_prefix_list)) {
-        const col = dest.byLower.get(lower(target));
-        if (!col) continue;
-        for (const key of suffixKeys(target)) if (!values.has(key)) values.set(key, col.name);
+        const col = dest.index.get(lower(target));
+        if (col === undefined) continue;
+        for (const key of suffixKeys(target)) if (!values.has(key)) values.set(key, col);
       }
       if (!values.size) continue;
       const name = String(r.list);
@@ -369,19 +398,27 @@ export function buildFillSchema(dbPath: string): FillSchema {
       const dest = table(`A_${dbClass}`);
       if (!rule || !dest) continue;
       const ids = rule.ids.flatMap((k) => {
-        const col = dest.byLower.get(lower(k));
-        return col ? [{ col: col.name, key: lower(k) }] : [];
+        const col = dest.index.get(lower(k));
+        return col === undefined ? [] : [{ col, key: lower(k) }];
       });
       if (ids.length !== rule.ids.length) continue;
       const meta = metaOf(dest);
       for (const r of rows) {
-        const col = dest.byLower.get(lower(String(r.parameter)));
-        if (!col) continue;
+        const col = dest.index.get(lower(String(r.parameter)));
+        if (col === undefined) continue;
         const xmlName = lower(String(r.external_name ?? r.parameter));
-        const plan: FlatParam = { table: dest, re: rule.re, ids, col: col.name, meta };
+        const plan: FlatParam = { table: dest, re: rule.re, ids, col, meta };
         const arr = flatParams.get(xmlName);
         if (arr) arr.push(plan);
         else flatParams.set(xmlName, [plan]);
+      }
+    }
+
+    const simple = new Map<string, { cls: FillClass | null; re: RegExp }>();
+    for (const [key, list] of rules) {
+      const first = list[0];
+      if (first && list.every((rule) => rule.dbClass === first.dbClass)) {
+        simple.set(key, { cls: classes.get(first.dbClass) ?? null, re: first.re });
       }
     }
 
@@ -392,6 +429,7 @@ export function buildFillSchema(dbPath: string): FillSchema {
       flat,
       flatParams,
       cache: new Map<string, FillClass | null>(),
+      simple,
       stats: { classes: classes.size, lists: listCount },
     };
   } finally {
@@ -401,43 +439,57 @@ export function buildFillSchema(dbPath: string): FillSchema {
 
 /** distName shape without instance ids - one class resolution per shape, not per object. */
 function dnShape(dn: string): string {
-  return dn
-    .split("/")
-    .map((s) => {
-      const i = s.indexOf("-");
-      return i === -1 ? s : s.slice(0, i);
-    })
-    .join("/");
+  let out = "";
+  let start = 0;
+  for (let i = 0; i <= dn.length; i++) {
+    if (i === dn.length || dn.charCodeAt(i) === 47) {
+      const dash = dn.indexOf("-", start);
+      const end = dash !== -1 && dash < i ? dash : i;
+      if (start > 0) out += "/";
+      out += dn.slice(start, end);
+      start = i + 1;
+    }
+  }
+  return out;
 }
 
-export type Resolved = { cls: FillClass; dn: string; ids: { col: string; value: string }[] };
+export type Resolved = { cls: FillClass; dn: string; values: string[] };
 
 function idsFor(cls: FillClass, dn: string): Resolved | null {
   const m = cls.idRe.exec(dn);
   if (m) {
     const values = m.slice(1 + cls.idOffset);
-    if (values.length === cls.ids.length) {
-      return { cls, dn, ids: cls.ids.map((c, i) => ({ col: c.col, value: values[i] })) };
-    }
+    if (values.length === cls.ids.length) return { cls, dn, values };
   }
   // Fallback for formats whose DN has a PLMN prefix that is not part of the format.
   const segs = dn.split("/");
   const off = segs[0]?.startsWith("PLMN-") ? 1 : 0;
   if (segs.length - off !== cls.ids.length) return null;
-  return {
-    cls,
-    dn,
-    ids: cls.ids.map((c, i) => {
-      const s = segs[off + i];
-      const dash = s.indexOf("-");
-      return { col: c.col, value: dash === -1 ? s : s.slice(dash + 1) };
-    }),
-  };
+  const values = new Array<string>(cls.ids.length);
+  for (let i = 0; i < values.length; i++) {
+    const s = segs[off + i];
+    const dash = s.indexOf("-");
+    values[i] = dash === -1 ? s : s.slice(dash + 1);
+  }
+  return { cls, dn, values };
+}
+
+function idsForExact(cls: FillClass, dn: string): Resolved | null {
+  const m = cls.idRe.exec(dn);
+  if (!m) return null;
+  const values = m.slice(1 + cls.idOffset);
+  return values.length === cls.ids.length ? { cls, dn, values } : null;
 }
 
 /** Resolve a managed object (class + distName) to its table and id values. */
 export function resolveClass(schema: FillSchema, xmlClass: string, dn: string): Resolved | null {
-  const key = `${lower(xmlClass)}\n${dnShape(dn)}`;
+  const simple = schema.simple.get(lower(xmlClass));
+  if (simple !== undefined) {
+    if (!simple.cls || !simple.re.test(dn)) return null;
+    return idsForExact(simple.cls, dn) ?? idsFor(simple.cls, dn);
+  }
+
+  const key = `${xmlClass}\n${dnShape(dn)}`;
   const hit = schema.cache.get(key);
   if (hit !== undefined) return hit ? idsFor(hit, dn) : null;
 
@@ -468,33 +520,51 @@ function decodeText(s: string): string {
     .replace(/&amp;/g, "&");
 }
 
+const attrSpace = (c: number) => c === 32 || c === 9 || c === 10 || c === 13;
+
+/** Value of the `name` attribute in [from,to), without allocating the tag slice. */
+function rangeAttr(s: string, from: number, to: number): string | undefined {
+  for (let i = s.indexOf("name", from); i !== -1 && i < to; i = s.indexOf("name", i + 4)) {
+    if (i !== from && !attrSpace(s.charCodeAt(i - 1))) continue;
+    let j = i + 4;
+    let c = s.charCodeAt(j);
+    while (attrSpace(c)) c = s.charCodeAt(++j);
+    if (c !== 61) continue;
+    c = s.charCodeAt(++j);
+    while (attrSpace(c)) c = s.charCodeAt(++j);
+    if (c !== 34 && c !== 39) continue;
+    const end = s.indexOf(c === 34 ? '"' : "'", j + 1);
+    if (end !== -1 && end <= to) return decodeText(s.slice(j + 1, end));
+  }
+  return undefined;
+}
+
 /** Parses the <p> children inside [from,to) of a list item (stops at a nested list). */
 function parseP(block: string, from: number, to: number, out: [string | null, string][]) {
-  let i = from;
-  while (i < to) {
-    const p = block.indexOf("<p", i);
-    if (p === -1 || p >= to) return;
-    if (p + 2 >= to) return;
+  let p = block.indexOf("<p", from);
+  let l = block.indexOf("<list", from);
+  while (p !== -1 && p < to) {
+    if (l !== -1 && l < p) return;
     let gt: number;
     const c = block.charCodeAt(p + 2);
     if (c === 62) gt = p + 2; // <p> - a plain scalar value
-    else if (c === 32 || c === 9 || c === 10 || c === 13) gt = block.indexOf(">", p + 3);
+    else if (attrSpace(c)) gt = block.indexOf(">", p + 3);
     else {
-      i = p + 2;
+      p = block.indexOf("<p", p + 2);
       continue;
     }
     if (gt === -1 || gt >= to) return;
-    const l = block.indexOf("<list", i);
-    if (l !== -1 && l < p) return;
     if (block[gt - 1] === "/") {
-      i = gt + 1;
+      p = block.indexOf("<p", gt + 1);
+      if (l !== -1 && l < gt + 1) l = block.indexOf("<list", gt + 1);
       continue;
     }
     const close = block.indexOf("</p>", gt + 1);
     if (close === -1 || close >= to) return;
-    const name = gt === p + 2 ? null : (attrValue(block.slice(p + 3, gt), "name") ?? null);
+    const name = gt === p + 2 ? null : (rangeAttr(block, p + 3, gt) ?? null);
     out.push([name, decodeText(block.slice(gt + 1, close)).trim()]);
-    i = close + 4;
+    p = block.indexOf("<p", close + 4);
+    if (l !== -1 && l < close + 4) l = block.indexOf("<list", close + 4);
   }
 }
 
@@ -516,34 +586,37 @@ function findListClose(s: string, start: number): number {
   }
 }
 
-/** Parses one managed-object body: flat <p> params + top-level <list> blocks. */
-export function parseManagedObjectBody(body: Buffer): { params: [string, string][]; lists: ObjectLists } {
-  const s = body.toString("utf8");
-  const params: [string, string][] = [];
-  const lists: ObjectLists = new Map();
-  let i = 0;
-  while (i < s.length) {
-    const p = s.indexOf("<p ", i);
-    const l = s.indexOf("<list ", i);
-    const next = p === -1 ? l : l === -1 ? p : Math.min(p, l);
-    if (next === -1) break;
+export type ObjectBody = { params: string[]; lists: ObjectLists };
 
-    if (next === p) {
+/** Parses one managed-object body: flat <p> params + top-level <list> blocks. */
+export function parseManagedObjectBody(body: Buffer): ObjectBody {
+  const s = body.toString("utf8");
+  const params: string[] = [];
+  const lists: ObjectLists = new Map();
+  let p = s.indexOf("<p ");
+  let l = s.indexOf("<list ");
+  let i = 0;
+  while (p !== -1 || l !== -1) {
+    if (l === -1 || (p !== -1 && p < l)) {
       const gt = s.indexOf(">", p + 3);
       if (gt === -1) break;
       if (s[gt - 1] === "/") {
         i = gt + 1;
+        p = s.indexOf("<p ", i);
+        if (l !== -1 && l < i) l = s.indexOf("<list ", i);
         continue;
       }
       const close = s.indexOf("</p>", gt + 1);
       if (close === -1) break;
-      const name = attrValue(s.slice(p + 3, gt), "name");
-      if (name) params.push([name, decodeText(s.slice(gt + 1, close)).trim()]);
+      const name = rangeAttr(s, p + 3, gt);
+      if (name) params.push(name, decodeText(s.slice(gt + 1, close)).trim());
       i = close + 4;
+      p = s.indexOf("<p ", i);
+      if (l !== -1 && l < i) l = s.indexOf("<list ", i);
     } else {
       const gt = s.indexOf(">", l + 6);
       if (gt === -1) break;
-      const name = attrValue(s.slice(l + 6, gt), "name");
+      const name = rangeAttr(s, l + 6, gt);
       const close = findListClose(s, gt + 1);
       if (close === -1) break;
       const block = s.slice(gt + 1, close);
@@ -567,6 +640,8 @@ export function parseManagedObjectBody(body: Buffer): { params: [string, string]
       }
       if (name) lists.set(name, { items, scalars });
       i = close + 7;
+      l = s.indexOf("<list ", i);
+      if (p !== -1 && p < i) p = s.indexOf("<p ", i);
     }
   }
   return { params, lists };
@@ -581,16 +656,77 @@ export type FillStats = {
   unknownLists: Map<string, number>;
 };
 
+const bump = (m: Map<string, number>, k: string) => m.set(k, (m.get(k) ?? 0) + 1);
+
+type BuildCtx = {
+  cls: FillClass;
+  values: string[];
+  parent: Map<number, string | number>;
+  idValues: Map<string, string> | undefined;
+  flatRows: Map<string, FillRow> | undefined;
+  stats: FillStats;
+};
+
+const idMap = (ctx: BuildCtx): Map<string, string> => {
+  let m = ctx.idValues;
+  if (!m) {
+    m = new Map();
+    for (let i = 0; i < ctx.cls.ids.length; i++) m.set(ctx.cls.ids[i].key, ctx.values[i]);
+    ctx.idValues = m;
+  }
+  return m;
+};
+
+const flatDest = (
+  ctx: BuildCtx,
+  table: FillTable,
+  planIds: { col: number; key: string }[],
+  meta: MetaCols,
+): Map<number, string | number> => {
+  if (table.name === ctx.cls.table.name) return ctx.parent;
+  let e = ctx.flatRows?.get(table.name);
+  if (!e) {
+    const values = new Map<number, string | number>();
+    for (const id of planIds) values.set(id.col, idMap(ctx).get(id.key)!);
+    e = { table, values, meta };
+    (ctx.flatRows ??= new Map()).set(table.name, e);
+    ctx.stats.childRows++;
+  }
+  return e.values;
+};
+
+const childRow = (
+  ctx: BuildCtx,
+  listName: string,
+  plan: ChildList,
+  n: number,
+  items: [string | null, string][],
+): Map<number, string | number> => {
+  const row = new Map<number, string | number>();
+  const ids = idMap(ctx);
+  for (const id of plan.ids) {
+    const v = ids.get(id.key);
+    if (v !== undefined) row.set(id.col, v);
+  }
+  if (plan.listIdCol !== null) row.set(plan.listIdCol, n + 1);
+  for (const [pn, pv] of items) {
+    const col = pn ? plan.values.get(lower(pn)) : (plan.flatValueCol ?? undefined);
+    if (col !== undefined) row.set(col, pv);
+    else if (pn) bump(ctx.stats.unknownParams, `${ctx.cls.dbClass}.${listName}.${pn}`);
+  }
+  return row;
+};
+
 export type FillSinkOptions = {
   exportMs: number;
-  emit: (rows: { table: FillTable; values: Map<string, string | number> }[]) => Promise<void>;
+  emit: (rows: FillRow[]) => void | Promise<void>;
   onObject?: () => void;
 };
 
 export function createFillSink(
   schema: FillSchema,
   opts: FillSinkOptions,
-): { sink: XmlTagSink; stats: FillStats; finish: () => Promise<void> } {
+): { sink: XmlTagSink; stats: FillStats; finish: () => void | Promise<void> } {
   const stats: FillStats = {
     objects: 0,
     parentRows: 0,
@@ -599,111 +735,92 @@ export function createFillSink(
     unknownParams: new Map(),
     unknownLists: new Map(),
   };
-  const bump = (m: Map<string, number>, k: string) => m.set(k, (m.get(k) ?? 0) + 1);
   let current: Resolved | null = null;
   let pendingSelf: Resolved[] = [];
-
-  const setMeta = (row: Map<string, string | number>, meta: MetaCols) => {
-    if (meta.status) row.set(lower(meta.status), "ACTUAL");
-    if (meta.modified) row.set(lower(meta.modified), opts.exportMs);
-    if (meta.imported) row.set(lower(meta.imported), opts.exportMs);
+  const out: FillRow[] = [];
+  const ctx: BuildCtx = {
+    cls: null as unknown as FillClass,
+    values: [],
+    parent: new Map(),
+    idValues: undefined,
+    flatRows: undefined,
+    stats,
   };
 
-  const build = async (r: Resolved, parsed: { params: [string, string][]; lists: ObjectLists }) => {
-    const { cls, ids } = r;
-    const idValues = new Map<string, string>();
-    const parent = new Map<string, string | number>();
-    for (const id of ids) {
-      idValues.set(lower(id.col), id.value);
-      parent.set(lower(id.col), id.value);
-    }
+  const build = (r: Resolved, parsed: ObjectBody): void | Promise<void> => {
+    const { cls, values } = r;
+    const ids = cls.ids;
+    const parent = new Map<number, string | number>();
+    for (let i = 0; i < ids.length; i++) parent.set(ids[i].col, values[i]);
     // mapping_type=2 rows: one row per destination table, all its lists merged into it.
-    const flatRows = new Map<string, { table: FillTable; values: Map<string, string | number> }>();
-    const flatDest = (table: FillTable, planIds: { col: string; key: string }[], meta: MetaCols) => {
-      if (table.name === cls.table.name) return parent;
-      let e = flatRows.get(table.name);
-      if (!e) {
-        const values = new Map<string, string | number>();
-        for (const id of planIds) values.set(lower(id.col), idValues.get(id.key)!);
-        setMeta(values, meta);
-        e = { table, values };
-        flatRows.set(table.name, e);
-        stats.childRows++;
-      }
-      return e.values;
-    };
+    ctx.cls = cls;
+    ctx.values = values;
+    ctx.parent = parent;
+    ctx.idValues = undefined;
+    ctx.flatRows = undefined;
 
-    for (const [name, value] of parsed.params) {
-      const col = cls.cols.get(lower(name));
-      if (col) {
-        parent.set(lower(col), value);
+    for (let pi = 0; pi < parsed.params.length; pi += 2) {
+      const name = parsed.params[pi];
+      const value = parsed.params[pi + 1];
+      let col = cls.paramLookup.get(name);
+      if (col === undefined) {
+        col = cls.cols.get(lower(name)) ?? false;
+        cls.paramLookup.set(name, col);
+      }
+      if (col !== false) {
+        parent.set(col, value);
         continue;
       }
-      const hit = schema.flatParams
-        .get(lower(name))
-        ?.find((p) => p.re.test(r.dn) && p.ids.every((id) => idValues.has(id.key)));
-      if (hit) flatDest(hit.table, hit.ids, hit.meta).set(lower(hit.col), value);
+      let flat = cls.flatParamLookup.get(name);
+      if (flat === undefined) {
+        flat = schema.flatParams.get(lower(name)) ?? false;
+        cls.flatParamLookup.set(name, flat);
+      }
+      const hit = flat
+        ? flat.find((p) => p.re.test(r.dn) && p.ids.every((id) => idMap(ctx).has(id.key)))
+        : undefined;
+      if (hit) flatDest(ctx, hit.table, hit.ids, hit.meta).set(hit.col, value);
       else bump(stats.unknownParams, `${cls.dbClass}.${name}`);
     }
 
     // NetAct materialises empty rows for every same-distName block table of the parent class.
     for (const b of cls.blocks) {
-      if (b.table.name !== cls.table.name && !flatRows.has(b.table.name) && b.ids.every((id) => idValues.has(id.key))) {
-        flatDest(b.table, b.ids, b.meta);
+      if (b.table.name !== cls.table.name && !(ctx.flatRows as Map<string, FillRow> | undefined)?.has(b.table.name) && b.ids.every((id) => idMap(ctx).has(id.key))) {
+        flatDest(ctx, b.table, b.ids, b.meta);
       }
     }
 
-    const out: { table: FillTable; values: Map<string, string | number> }[] = [{ table: cls.table, values: parent }];
+    out.length = 0;
+    out.push({ table: cls.table, values: parent, meta: cls.meta });
     stats.parentRows++;
-
-    const childRow = (
-      listName: string,
-      plan: ChildList,
-      n: number,
-      items: [string | null, string][],
-    ): Map<string, string | number> => {
-      const row = new Map<string, string | number>();
-      for (const id of plan.ids) {
-        const v = idValues.get(id.key);
-        if (v !== undefined) row.set(lower(id.col), v);
-      }
-      if (plan.listIdCol) row.set(lower(plan.listIdCol), n + 1);
-      for (const [pn, pv] of items) {
-        const col = pn ? plan.values.get(lower(pn)) : (plan.flatValueCol ?? undefined);
-        if (col) row.set(lower(col), pv);
-        else if (pn) bump(stats.unknownParams, `${cls.dbClass}.${listName}.${pn}`);
-      }
-      setMeta(row, plan.meta);
-      return row;
-    };
 
     for (const [name, data] of parsed.lists) {
       const child = cls.lists.get(lower(name));
       if (child) {
         const items = data.items.length ? data.items : data.scalars.map((v): [string | null, string][] => [[null, v]]);
         for (let n = 0; n < items.length; n++) {
-          out.push({ table: child.table, values: childRow(name, child, n, items[n]) });
+          out.push({ table: child.table, values: childRow(ctx, name, child, n, items[n]), meta: child.meta });
           stats.childRows++;
         }
         continue;
       }
 
       const flat = schema.flat.get(lower(name));
-      const plan = flat?.find((p) => p.re.test(r.dn) && p.ids.every((id) => idValues.has(id.key)));
+      const plan = flat?.find((p) => p.re.test(r.dn) && p.ids.every((id) => idMap(ctx).has(id.key)));
       if (plan) {
-        const dest = flatDest(plan.table, plan.ids, plan.meta);
+        const dest = flatDest(ctx, plan.table, plan.ids, plan.meta);
         if (data.items.length) {
           for (const item of data.items) {
             for (const [pn, pv] of item) {
               if (!pn) continue;
               const col = plan.values.get(lower(pn));
-              if (col) dest.set(lower(col), pv);
+              if (col !== undefined) dest.set(col, pv);
               else bump(stats.unknownParams, `${cls.dbClass}.${name}.${pn}`);
             }
           }
         } else {
           for (const v of data.scalars) {
-            if (plan.flatValueCol) dest.set(lower(plan.flatValueCol), v);
+            if (plan.flatValueCol !== null) dest.set(plan.flatValueCol, v);
             else bump(stats.unknownParams, `${cls.dbClass}.${name}`);
           }
         }
@@ -715,7 +832,7 @@ export function createFillSink(
       if (data.items.length === 0 && cls.scalarLists.length === 1) {
         const fallback = cls.scalarLists[0];
         for (let n = 0; n < data.scalars.length; n++) {
-          out.push({ table: fallback.table, values: childRow(name, fallback, n, [[null, data.scalars[n]]]) });
+          out.push({ table: fallback.table, values: childRow(ctx, name, fallback, n, [[null, data.scalars[n]]]), meta: fallback.meta });
           stats.childRows++;
         }
         continue;
@@ -724,18 +841,25 @@ export function createFillSink(
       bump(stats.unknownLists, `${cls.dbClass}.${name}`);
     }
 
-    setMeta(parent, cls.meta);
-    for (const row of flatRows.values()) out.push(row);
+    if (ctx.flatRows) for (const row of (ctx.flatRows as Map<string, FillRow>).values()) out.push(row);
 
-    await opts.emit(out);
+    const p = opts.emit(out);
+    if (p) return p.then(() => opts.onObject?.());
     opts.onObject?.();
   };
 
-  const flushSelf = async () => {
+  const emptyBody: ObjectBody = { params: [], lists: new Map() };
+
+  const flushSelf = (): void | Promise<void> => {
     if (pendingSelf.length === 0) return;
     const list = pendingSelf;
     pendingSelf = [];
-    for (const r of list) await build(r, { params: [], lists: new Map() });
+    let p: void | Promise<void> = undefined;
+    for (const r of list) {
+      if (p) p = p.then(() => build(r, emptyBody));
+      else p = build(r, emptyBody);
+    }
+    return p;
   };
 
   return {
@@ -755,12 +879,14 @@ export function createFillSink(
         else current = r;
         return !selfClose;
       },
-      async onBody(body) {
+      onBody(body) {
         const r = current;
         current = null;
-        if (pendingSelf.length) await flushSelf();
-        if (!r) return;
-        await build(r, parseManagedObjectBody(body));
+        if (pendingSelf.length) {
+          const p = flushSelf();
+          if (p) return r ? p.then(() => build(r, parseManagedObjectBody(body))) : p;
+        }
+        if (r) return build(r, parseManagedObjectBody(body));
       },
     },
     stats,
@@ -768,11 +894,97 @@ export function createFillSink(
   };
 }
 
+export type RowWriter = {
+  write: (rows: FillRow[]) => void | Promise<void>;
+  finish: () => void | Promise<void>;
+};
+
+/**
+ * Encodes sparse rows into the line protocol.  `writeText` owns the transport (Java stdin or a
+ * worker's stdout) and returns a promise only when the transport is backpressured.
+ */
+export function createRowWriter(
+  exportMs: number,
+  writeText: (text: string) => void | Promise<void>,
+  tableId: (tableName: string) => number = (() => {
+    let n = 0;
+    return () => ++n;
+  })(),
+): RowWriter {
+  const enc = (v: string | number | null | undefined): string => {
+    if (v === null || v === undefined) return "";
+    const s = String(v);
+    if (s === "") return "!";
+    if (s === "!") return "\\!";
+    if (s.indexOf("\\") === -1 && s.indexOf("\t") === -1 && s.indexOf("\n") === -1 && s.indexOf("\r") === -1) return s;
+    return s.replace(/\\/g, "\\\\").replace(/\t/g, "\\t").replace(/\n/g, "\\n").replace(/\r/g, "\\r");
+  };
+  const statusEnc = enc("ACTUAL");
+  const timeEnc = enc(exportMs);
+
+  let chunk: string[] = [];
+  let pending = 0;
+  const flush = (force = false): void | Promise<void> => {
+    if (!force && pending < 4 * 1024 * 1024) return;
+    const text = chunk.join("");
+    chunk = [];
+    pending = 0;
+    return writeText(text);
+  };
+
+  type EmitTable = { id: number; nmsIndex: number };
+  const tableMeta = new Map<string, EmitTable>();
+
+  const write = (rows: FillRow[]): void | Promise<void> => {
+    for (const r of rows) {
+      let meta = tableMeta.get(r.table.name);
+      if (!meta) {
+        const nmsIndex = r.table.index.get("nms_id") ?? -1;
+        meta = { id: tableId(r.table.name), nmsIndex };
+        tableMeta.set(r.table.name, meta);
+        chunk.push(`H\t${meta.id}\t${r.table.name}\t${r.table.cols.map((c) => c.name).join("\t")}\n`);
+        pending += 64 + r.table.cols.length * 12;
+      }
+      let pairCount = 0;
+      let rowLine = `R\t${meta.id}`;
+      if (meta.nmsIndex >= 0 && !r.values.has(meta.nmsIndex)) {
+        rowLine += `\t${meta.nmsIndex}:1`;
+        pairCount++;
+      }
+      for (const [idx, v] of r.values) {
+        if (v === "" || v === null || v === undefined) continue;
+        rowLine += `\t${idx}:${enc(v)}`;
+        pairCount++;
+      }
+      if (r.meta.status !== null) {
+        rowLine += `\t${r.meta.status}:${statusEnc}`;
+        pairCount++;
+      }
+      if (r.meta.modified !== null) {
+        rowLine += `\t${r.meta.modified}:${timeEnc}`;
+        pairCount++;
+      }
+      if (r.meta.imported !== null) {
+        rowLine += `\t${r.meta.imported}:${timeEnc}`;
+        pairCount++;
+      }
+      chunk.push(`${rowLine}\n`);
+      pending += 12 + pairCount * 4;
+    }
+    return flush();
+  };
+
+  return { write, finish: () => flush(true) };
+}
+
 export type FillOptions = {
   templatePath: string;
   xml: AsyncIterable<Buffer | Uint8Array>;
+  /** Direct XML file path. When set, large exports are split across seekable worker processes. */
+  xmlPath?: string;
+  workers?: number;
   outPath: string;
-  onProgress?: (p: { objects: number; rows: number; phase: string }) => void;
+  onProgress?: (p: { objects: number; rows: number; phase: string; bytes?: number }) => void;
 };
 
 export type FillResult = FillStats & {
@@ -845,6 +1057,218 @@ export function resolveJava(): string {
   return "java";
 }
 
+function readFileHead(file: string, bytes: number): string {
+  const buf = Buffer.allocUnsafe(bytes);
+  const fd = fs.openSync(file, "r");
+  try {
+    const n = fs.readSync(fd, buf, 0, bytes, 0);
+    return buf.subarray(0, n).toString("utf8");
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+const OBJECT_TAG = "<managedObject";
+function findObjectTag(buf: Buffer, from = 0): number {
+  for (let i = buf.indexOf(OBJECT_TAG, from); i !== -1; i = buf.indexOf(OBJECT_TAG, i + 1)) {
+    const next = buf[i + OBJECT_TAG.length];
+    if (next === 32 || next === 9 || next === 10 || next === 13 || next === 62) return i;
+  }
+  return -1;
+}
+
+/** Byte offsets of complete `<managedObject>` boundaries, first 0 and last file size. */
+async function xmlSplitPoints(file: string, size: number, parts: number): Promise<number[]> {
+  const points = [0];
+  const fh = await fs.promises.open(file, "r");
+  try {
+    for (let p = 1; p < parts; p++) {
+      const target = Math.floor((size * p) / parts);
+      const previous = points[points.length - 1];
+      if (target <= previous + 1) continue;
+      const len = Math.min(64 << 20, size - target);
+      if (len <= 0) continue;
+      const buf = Buffer.allocUnsafe(len);
+      const { bytesRead } = await fh.read(buf, 0, len, target);
+      const idx = findObjectTag(buf.subarray(0, bytesRead));
+      if (idx < 0) continue;
+      const pos = target + idx;
+      if (pos > previous + 1) points.push(pos);
+    }
+  } finally {
+    await fh.close();
+  }
+  points.push(size);
+  return points;
+}
+
+type ParallelConfig = { java: string; cp: string; heap: string; workers: number; exportMs: number; exportTime: string | null };
+
+async function fillDatabaseParallel(opts: FillOptions, schema: FillSchema, cfg: ParallelConfig): Promise<FillResult> {
+  const { spawn } = await import("node:child_process");
+  const { StringDecoder } = await import("node:string_decoder");
+  const xmlPath = opts.xmlPath!;
+  const size = fs.statSync(xmlPath).size;
+  const points = await xmlSplitPoints(xmlPath, size, cfg.workers);
+
+  const child = spawn(cfg.java, [cfg.heap, "-XX:+UseSerialGC", "-Duser.timezone=UTC", "-cp", cfg.cp, "MdbFill", opts.outPath], {
+    stdio: ["pipe", "ignore", "pipe"],
+  });
+  let stderr = "";
+  let errors = 0;
+  const errorSamples: string[] = [];
+  const errorTables = new Map<string, number>();
+  child.stderr!.on("data", (d: Buffer) => {
+    const s = d.toString();
+    if (process.env.MDB_FILL_VERBOSE === "1") process.stderr.write(s);
+    stderr += s;
+    if (stderr.length > 128 * 1024) stderr = stderr.slice(-128 * 1024);
+    if (s.includes("ERR ")) {
+      errors += (s.match(/(^|\n)ERR /g) ?? []).length;
+      for (const m of s.matchAll(/(?:^|\n)ERR (\S+)/g)) errorTables.set(m[1], (errorTables.get(m[1]) ?? 0) + 1);
+      if (errorSamples.length < 20) for (const line of s.split(/\r?\n/)) if (line.startsWith("ERR ")) errorSamples.push(line);
+    }
+  });
+  child.stdin!.on("error", () => {});
+  child.stdin!.setMaxListeners(0);
+  const exit = new Promise<number>((resolve, reject) => {
+    child.on("error", reject);
+    child.on("close", (code) => resolve(code ?? -1));
+  });
+  exit.catch(() => {});
+  await new Promise<void>((resolve, reject) => {
+    child.once("spawn", resolve);
+    child.once("error", reject);
+  });
+
+  const workerPath = process.env.MDB_FILL_WORKER ?? path.join(process.cwd(), "src", "lib", "fillWorker.ts");
+  const execArgv = process.execArgv.includes("tsx")
+    ? process.execArgv
+    : ["--import", "tsx", ...process.execArgv];
+  if (!execArgv.some((a) => a.startsWith("--max-semi-space-size"))) execArgv.push("--max-semi-space-size=64");
+
+  const workerStats: FillStats[] = [];
+  const streams: NodeJS.ReadableStream[] = [];
+  let javaPaused = false;
+  const pauseAll = () => {
+    if (javaPaused) return;
+    javaPaused = true;
+    for (const s of streams) s.pause();
+  };
+  const resumeAll = () => {
+    if (!javaPaused) return;
+    javaPaused = false;
+    for (const s of streams) s.resume();
+  };
+  const writeJava = (text: string) => {
+    if (!text) return;
+    if (!child.stdin!.write(text)) {
+      pauseAll();
+      child.stdin!.once("drain", resumeAll);
+      child.stdin!.once("close", resumeAll);
+    }
+  };
+
+  let progressObjects = 0;
+  let progressRows = 0;
+  let progressBytes = 0;
+  let lastProgress = 0;
+  const workers: ReturnType<typeof spawn>[] = [];
+  const progress = points.slice(1).map(() => ({ objects: 0, rows: 0, bytes: 0 }));
+  const done = points.slice(1).map((end, i) => {
+    const start = points[i];
+    const w = spawn(process.execPath, [...execArgv, workerPath, opts.templatePath, xmlPath, String(start), String(end), String(cfg.exportMs)], {
+      stdio: ["ignore", "pipe", "pipe", "ipc"],
+    });
+    workers.push(w);
+    w.stdin?.on("error", () => {});
+    let carry = "";
+    const decoder = new StringDecoder("utf8");
+    const out = w.stdout!;
+    streams.push(out);
+    out.on("data", (d: Buffer) => {
+      carry += decoder.write(d);
+      const nl = carry.lastIndexOf("\n");
+      if (nl >= 0) {
+        writeJava(carry.slice(0, nl + 1));
+        carry = carry.slice(nl + 1);
+      }
+    });
+    out.on("end", () => {
+      carry += decoder.end();
+      if (carry) writeJava(carry);
+    });
+    w.on("message", (m: { type?: string; objects?: number; rows?: number; bytes?: number; stats?: FillStats }) => {
+      if (m.type === "stats" && m.stats) workerStats[i] = m.stats;
+      if (m.type !== "progress") return;
+      progress[i] = { objects: m.objects ?? 0, rows: m.rows ?? 0, bytes: m.bytes ?? 0 };
+
+      const now = Date.now();
+      if (now - lastProgress < 1000) return;
+      lastProgress = now;
+      progressObjects = 0;
+      progressRows = 0;
+      progressBytes = 0;
+      for (const p of progress) {
+        progressObjects += p.objects;
+        progressRows += p.rows;
+        progressBytes += p.bytes;
+      }
+      opts.onProgress?.({ objects: progressObjects, rows: progressRows, bytes: progressBytes, phase: "fill" });
+    });
+    let workerErr = "";
+    w.stderr!.on("data", (d: Buffer) => {
+      workerErr += d.toString();
+      if (workerErr.length > 32 * 1024) workerErr = workerErr.slice(-32 * 1024);
+    });
+    return new Promise<number>((resolve, reject) => {
+      w.on("error", reject);
+      w.on("close", (code) => {
+        if (code !== 0) reject(new Error(`Fill worker failed (exit ${code}). ${workerErr.trim().split(/\r?\n/).slice(-3).join(" ")}`));
+        else resolve(code ?? 0);
+      });
+    });
+  });
+
+  try {
+    await Promise.all(done);
+    if (workerStats.length !== points.length - 1) throw new Error("Fill workers did not report their statistics.");
+    child.stdin!.end("E\n");
+    const code = await exit;
+    if (code !== 0) {
+      throw new Error(`Database writer failed (exit ${code}). ${stderr.trim().split(/\r?\n/).slice(-3).join(" ")}`);
+    }
+    const merged: FillStats = {
+      objects: 0,
+      parentRows: 0,
+      childRows: 0,
+      skippedClass: new Map(),
+      unknownParams: new Map(),
+      unknownLists: new Map(),
+    };
+    for (const s of workerStats) {
+      merged.objects += s.objects;
+      merged.parentRows += s.parentRows;
+      merged.childRows += s.childRows;
+      for (const [k, v] of s.skippedClass) merged.skippedClass.set(k, (merged.skippedClass.get(k) ?? 0) + v);
+      for (const [k, v] of s.unknownParams) merged.unknownParams.set(k, (merged.unknownParams.get(k) ?? 0) + v);
+      for (const [k, v] of s.unknownLists) merged.unknownLists.set(k, (merged.unknownLists.get(k) ?? 0) + v);
+    }
+    return {
+      ...merged,
+      errors,
+      errorSamples,
+      errorTables: [...errorTables].sort((a, b) => b[1] - a[1]).slice(0, 20),
+      exportTime: cfg.exportTime,
+    };
+  } catch (e) {
+    for (const w of workers) w.kill();
+    child.kill();
+    await exit.catch(() => {});
+    throw e;
+  }
+}
+
 /** Converts the XML stream into rows and inserts them into `outPath` (a copy of the template). */
 export async function fillDatabase(opts: FillOptions, schema: FillSchema): Promise<FillResult> {
   const { spawn } = await import("node:child_process");
@@ -852,7 +1276,21 @@ export async function fillDatabase(opts: FillOptions, schema: FillSchema): Promi
   const classes = process.env.MDB_FILL_CLASSES ?? "tools/mdb-fill/classes";
   const jar = process.env.MDB_FILL_JAR ?? "tools/mdb-fill/jackcess-5.0.4.jar";
   const cp = `${classes}${process.platform === "win32" ? ";" : ":"}${jar}`;
-  const heap = process.env.MDB_FILL_HEAP ?? "-Xmx448m";
+  const heap = process.env.MDB_FILL_HEAP ?? "-Xmx1g";
+
+  const configured = Number(process.env.MDB_FILL_WORKERS);
+  const workers =
+    opts.workers ?? (Number.isFinite(configured) ? configured : Math.min(4, Math.max(1, os.availableParallelism() - 2)));
+  const workerFile = process.env.MDB_FILL_WORKER ?? path.join(process.cwd(), "src", "lib", "fillWorker.ts");
+  if (opts.xmlPath && workers > 1 && fs.existsSync(/* turbopackIgnore: true */ workerFile)) {
+    const size = fs.statSync(opts.xmlPath).size;
+    if (size >= 64 * 1024 * 1024) {
+      const headText = readFileHead(opts.xmlPath, 16384);
+      const exportTime = exportTimeFromXml(headText);
+      const exportMs = (exportTime ? wallClockMs(exportTime) : null) ?? Date.now();
+      return fillDatabaseParallel(opts, schema, { java, cp, heap, workers, exportMs, exportTime });
+    }
+  }
 
   const toBuf = (c: Buffer | Uint8Array): Buffer =>
     Buffer.isBuffer(c) ? c : Buffer.from(c.buffer, c.byteOffset, c.byteLength);
@@ -875,7 +1313,7 @@ export async function fillDatabase(opts: FillOptions, schema: FillSchema): Promi
   const exportTime = exportTimeFromXml(headText);
   const exportMs = (exportTime ? wallClockMs(exportTime) : null) ?? Date.now();
 
-  const child = spawn(java, [heap, "-Duser.timezone=UTC", "-cp", cp, "MdbFill", opts.outPath], {
+  const child = spawn(java, [heap, "-XX:+UseSerialGC", "-Duser.timezone=UTC", "-cp", cp, "MdbFill", opts.outPath], {
     stdio: ["pipe", "ignore", "pipe"],
   });
   let stderr = "";
@@ -884,6 +1322,7 @@ export async function fillDatabase(opts: FillOptions, schema: FillSchema): Promi
   const errorTables = new Map<string, number>();
   child.stderr!.on("data", (d: Buffer) => {
     const s = d.toString();
+    if (process.env.MDB_FILL_VERBOSE === "1") process.stderr.write(s);
     stderr += s;
     if (stderr.length > 128 * 1024) stderr = stderr.slice(-128 * 1024);
     if (s.includes("ERR ")) {
@@ -913,32 +1352,10 @@ export async function fillDatabase(opts: FillOptions, schema: FillSchema): Promi
   });
 
   let objects = 0;
-  const declared = new Set<string>();
-  const encCache = new Map<string, string>();
-  const enc = (v: string | number | null | undefined): string => {
-    if (v === null || v === undefined) return "-";
-    const s = String(v);
-    if (s === "") return "!";
-    if (s.length <= 8) {
-      const hit = encCache.get(s);
-      if (hit !== undefined) return hit;
-      const b = Buffer.from(s, "utf8").toString("base64");
-      if (encCache.size < 100_000) encCache.set(s, b);
-      return b;
-    }
-    return Buffer.from(s, "utf8").toString("base64");
-  };
-
-  let chunk: string[] = [];
-  let pending = 0;
-  const write = async (force = false) => {
-    if (!force && pending < 512 * 1024) return;
-    const text = chunk.join("");
-    chunk = [];
-    pending = 0;
+  const writer = createRowWriter(exportMs, (text) => {
     if (!child.stdin!.write(text)) {
       // A dead writer never emits "drain"; also resolve on close/error so the job fails instead of hanging.
-      await new Promise<void>((resolve) => {
+      return new Promise<void>((resolve) => {
         const stdin = child.stdin!;
         const done = () => {
           stdin.off("drain", done);
@@ -951,7 +1368,7 @@ export async function fillDatabase(opts: FillOptions, schema: FillSchema): Promi
         stdin.once("error", done);
       });
     }
-  };
+  });
 
   const { sink, stats, finish } = createFillSink(schema, {
     exportMs,
@@ -961,26 +1378,7 @@ export async function fillDatabase(opts: FillOptions, schema: FillSchema): Promi
         opts.onProgress?.({ objects: stats.objects, rows: stats.parentRows + stats.childRows, phase: "fill" });
       }
     },
-    emit: async (rows) => {
-      for (const r of rows) {
-        // nms_id is not part of the OSS distName, but several tables have it in their ID index.
-        const nms = r.table.byLower.get("nms_id");
-        if (nms && !r.values.has("nms_id")) r.values.set("nms_id", 1);
-        if (!declared.has(r.table.name)) {
-          declared.add(r.table.name);
-          chunk.push(`H\t${r.table.name}\t${r.table.cols.map((c) => c.name).join("\t")}\n`);
-          pending += 64;
-        }
-        const vals: string[] = [];
-        for (const c of r.table.cols) {
-          const v = r.values.get(lower(c.name));
-          vals.push(enc(v));
-        }
-        chunk.push(`R\t${r.table.name}\t${vals.join("\t")}\n`);
-        pending += 16 + vals.length * 2;
-      }
-      await write();
-    },
+    emit: writer.write,
   });
 
   try {
@@ -994,9 +1392,8 @@ export async function fillDatabase(opts: FillOptions, schema: FillSchema): Promi
     })();
     await parseXmlStream(src, sink);
     await finish();
-    chunk.push("E\n");
-    await write(true);
-    child.stdin!.end();
+    await writer.finish();
+    child.stdin!.end("E\n");
     const code = await exit;
     if (code !== 0) {
       throw new Error(`Database writer failed (exit ${code}). ${stderr.trim().split(/\r?\n/).slice(-3).join(" ")}`);

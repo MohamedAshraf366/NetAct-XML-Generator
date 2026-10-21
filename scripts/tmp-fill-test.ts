@@ -2,7 +2,7 @@ import fs from "node:fs";
 import MDBReader from "mdb-reader";
 import { buildFillSchema, fillDatabase } from "../src/lib/fill";
 
-const dir = "C:/Users/ELBOSTAN/AppData/Local/Temp/opencode/dbinspect";
+const dir = "D:/netact-tmp/dbinspect";
 
 const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <raml xmlns="raml21.xsd" version="2.1">
@@ -10,9 +10,12 @@ const xml = `<?xml version="1.0" encoding="UTF-8"?>
     <log dateTime="2026-08-18T10:00:00.000+03:00" action="created" appInfo="FDI"/>
   </header>
   <managedObject class="LNCEL" version="x" distName="PLMN-PLMN/MRBTS-99999/LNBTS-99999/LNCEL-1">
-    <p name="cellName">TEST1</p>
+    <p name="cellName">A	B
+C\\D!</p>
     <p name="phyCellId">101</p>
     <p name="angle">90</p>
+    <p name="name">!</p>
+    <p name="oldDN">-</p>
   </managedObject>
   <managedObject class="LNADJL" version="x" distName="PLMN-PLMN/MRBTS-99999/LNBTS-99999/LNADJ-1/LNADJL-2">
     <list name="bcPlmnIdList">
@@ -70,7 +73,7 @@ async function main() {
     objects: res.objects,
     parentRows: res.parentRows,
     childRows: res.childRows,
-    errors: res.errors,
+    errors: res.errors, errorSamples: res.errorSamples, errorTables: res.errorTables,
     skipped: [...res.skippedClass].slice(0, 5),
     unknownParams: [...res.unknownParams].slice(0, 10),
     unknownLists: [...res.unknownLists].slice(0, 10),

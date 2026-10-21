@@ -225,7 +225,11 @@ export async function parseXmlStream(src: AsyncIterable<Buffer | Uint8Array>, si
           chunks.push(toBuf(buf));
           chunkBytes += buf.length;
         }
-        if (chunks.length > 0) await sink.onBody(chunks.length === 1 ? chunks[0] : Buffer.concat(chunks, chunkBytes));
+        if (chunks.length > 0) {
+          const body = chunks.length === 1 ? chunks[0] : Buffer.concat(chunks, chunkBytes);
+          const p = sink.onBody(body);
+          if (p) await p;
+        }
         break;
       }
       bodyStart = 0;
@@ -236,7 +240,11 @@ export async function parseXmlStream(src: AsyncIterable<Buffer | Uint8Array>, si
       chunks.push(buf.subarray(bodyStart, q));
       chunkBytes += q - bodyStart;
     }
-    await sink.onBody(chunks.length === 0 ? EMPTY : chunks.length === 1 ? chunks[0] : Buffer.concat(chunks, chunkBytes));
+    {
+      const body = chunks.length === 0 ? EMPTY : chunks.length === 1 ? chunks[0] : Buffer.concat(chunks, chunkBytes);
+      const p = sink.onBody(body);
+      if (p) await p;
+    }
     chunks = [];
     chunkBytes = 0;
     pos = q + CLOSE_TAG_B.length;
