@@ -71,7 +71,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ job }, { status: 202 });
   } catch (e) {
     console.error(e);
-    return fail(e instanceof Error ? e.message : "Could not start the fill job.", 500);
+    return fail(e instanceof Error ? e.message : "Could not start the dump job.", 500);
   }
 }
 

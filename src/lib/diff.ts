@@ -95,15 +95,22 @@ export function cellDistName(i: Ids) {
   return baseDistName("LTE", i);
 }
 
+/** Select the FDD or TDD target for a parameter. Only a few parameters differ (see dlRsBoost). */
+export function resolveTarget(def: ParamDef, tdd: boolean): ParamDef {
+  if (!tdd || !def.tddCls) return def;
+  return { ...def, cls: def.tddCls, suffix: def.tddSuffix ?? def.suffix };
+}
+
 /** Resolve the full distName a parameter targets. */
-export function objectDistName(i: Ids, r: Row, def: ParamDef): string | null {
-  const base = baseDistName(def.tech, i);
-  if (def.idColumn) {
-    const id = (r[def.idColumn] ?? "").trim();
+export function objectDistName(i: Ids, r: Row, def: ParamDef, tdd = false): string | null {
+  const target = resolveTarget(def, tdd);
+  const base = baseDistName(target.tech, i);
+  if (target.idColumn) {
+    const id = (r[target.idColumn] ?? "").trim();
     if (id === "") return null;
-    return `${base}/${def.idPrefix ?? ""}${id}`;
+    return `${base}/${target.idPrefix ?? ""}${id}`;
   }
-  return base + def.suffix;
+  return base + target.suffix;
 }
 
 /** Human label for the managed-object class a parameter maps to (used in warnings). */
@@ -128,9 +135,10 @@ export function wantedDistNames(
   rows: Row[],
   params: string[],
   paramDefs: Record<string, ParamDef> = PARAMS,
+  tdd = false,
 ): Set<string> {
   const out = new Set<string>();
-  const defs = params.map((p) => resolveDef(paramDefs, p));
+  const defs = params.map((p) => resolveTarget(resolveDef(paramDefs, p), tdd));
 
   for (let ri = 0; ri < rows.length; ri++) {
     const r = rows[ri];
@@ -204,6 +212,7 @@ export function buildChanges(
   params: string[],
   db: Map<string, DbObject> | null,
   paramDefs: Record<string, ParamDef> = PARAMS,
+  tdd = false,
 ): { changes: Change[]; warnings: string[]; unchanged: number } {
   const map = new Map<string, Change>();
   const warnings: string[] = [];
@@ -213,7 +222,7 @@ export function buildChanges(
   let notSet = 0;
   let unchanged = 0;
 
-  const defs = params.map((p) => resolveDef(paramDefs, p));
+  const defs = params.map((p) => resolveTarget(resolveDef(paramDefs, p), tdd));
 
   for (let ri = 0; ri < rows.length; ri++) {
     const r = rows[ri];

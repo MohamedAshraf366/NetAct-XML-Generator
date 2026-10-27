@@ -6,7 +6,7 @@ import { openFileBuffer } from "./fileBuffer";
 import { attrValue, parseXmlStream, type XmlTagSink } from "./xmlscan";
 
 /**
- * Fill an empty NetAct dump (.mdb) from a RAML XML export.
+ * Create a NetAct dump (.mdb) from a RAML XML export.
  *
  * The empty dump carries the import metadata: IMPORT_CLASS_FILTER maps a RAML class to the class
  * name used by the database and gives its distName format + id parameters; IMPORT_LIST_MAPPING
@@ -1230,7 +1230,7 @@ async function fillDatabaseParallel(opts: FillOptions, schema: FillSchema, cfg: 
     return new Promise<number>((resolve, reject) => {
       w.on("error", reject);
       w.on("close", (code) => {
-        if (code !== 0) reject(new Error(`Fill worker failed (exit ${code}). ${workerErr.trim().split(/\r?\n/).slice(-3).join(" ")}`));
+        if (code !== 0) reject(new Error(`Dump worker failed (exit ${code}). ${workerErr.trim().split(/\r?\n/).slice(-3).join(" ")}`));
         else resolve(code ?? 0);
       });
     });
@@ -1238,7 +1238,7 @@ async function fillDatabaseParallel(opts: FillOptions, schema: FillSchema, cfg: 
 
   try {
     await Promise.all(done);
-    if (workerStats.length !== points.length - 1) throw new Error("Fill workers did not report their statistics.");
+    if (workerStats.length !== points.length - 1) throw new Error("Dump workers did not report their statistics.");
     child.stdin!.end("E\n");
     const code = await exit;
     if (code !== 0) {

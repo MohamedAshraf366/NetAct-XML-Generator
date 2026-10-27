@@ -1,16 +1,6 @@
 import Link from "next/link";
-import Converter from "@/components/Converter";
 import ThemeToggle from "@/components/ThemeToggle";
-import { ALL_PARAM_NAMES, LTE_PARAMS, NR_PARAMS } from "@/lib/config";
-
-const paramMeta: Record<string, { techs: Array<"LTE" | "NR">; needsRelId: boolean }> = Object.fromEntries(
-  ALL_PARAM_NAMES.map((n) => {
-    const techs: Array<"LTE" | "NR"> = [];
-    if (n in LTE_PARAMS) techs.push("LTE");
-    if (n in NR_PARAMS) techs.push("NR");
-    return [n, { techs, needsRelId: Boolean(LTE_PARAMS[n]?.idColumn || NR_PARAMS[n]?.idColumn) }];
-  }),
-);
+import WorkflowCards from "@/components/WorkflowCards";
 
 function Logo() {
   return (
@@ -38,34 +28,62 @@ export default function Home() {
             <Logo />
             <div className="min-w-0 leading-tight">
               <p className="truncate font-semibold tracking-tight">NetAct XML Generator</p>
-              <p className="truncate text-xs text-slate-500 dark:text-slate-400">CSV / Excel → NetAct XML</p>
+              <p className="truncate text-xs text-slate-500 dark:text-slate-400">Create XML or a NetAct dump</p>
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-2">
-            <Link href="/fill" className="btn-ghost !px-3 !py-1.5 text-xs">
-              Fill a dump
+            <Link href="/create-xml" className="btn-ghost hidden !px-3 !py-1.5 text-xs sm:inline-flex">
+              Create XML
+            </Link>
+            <Link href="/fill" className="btn-primary hidden !px-3 !py-1.5 text-xs sm:inline-flex">
+              Create dump
             </Link>
             <ThemeToggle />
           </div>
         </header>
 
-        <section className="mb-8 max-w-3xl animate-fade-up sm:mb-10">
+        <section className="mb-6 max-w-3xl animate-fade-up sm:mb-7">
           <span className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white/70 px-3 py-1 text-xs font-medium text-slate-600 backdrop-blur-xl dark:border-white/10 dark:bg-white/5 dark:text-slate-300">
             <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-            Only changed values are exported
+            Create change XML or a complete dump
           </span>
           <h1 className="mt-4 font-semibold tracking-tight text-3xl sm:text-4xl md:text-5xl">
-            Compare plans, ship only the <span className="text-gradient">deltas</span>.
+            Create change XML or a ready <span className="text-gradient">NetAct dump</span>.
           </h1>
           <p className="mt-4 text-base leading-relaxed text-slate-600 dark:text-slate-400">
-            Upload your planned cell parameters and the current database. NetAct XML Generator writes only the values that actually changed
-            into a clean NetAct plan XML — ready to import.
+            Compare a CSV / Excel plan with the current database for a clean, change-only XML — or rebuild an empty
+            Access template from a full RAML export.
           </p>
         </section>
 
-        <div className="animate-fade-up [animation-delay:100ms]">
-          <Converter paramNames={ALL_PARAM_NAMES} paramMeta={paramMeta} />
+        <div className="animate-fade-up [animation-delay:75ms]">
+          <WorkflowCards />
         </div>
+
+        <section aria-label="How it works" className="mt-8 grid gap-3 sm:grid-cols-3">
+          {[
+            {
+              title: "Choose a workflow",
+              body: "Create XML for a change plan, or Create dump for a complete Access database.",
+            },
+            {
+              title: "Add your files",
+              body: "A CSV / Excel plan with an optional database, or a full RAML export with the empty template.",
+            },
+            {
+              title: "Download the result",
+              body: "A change-only NetAct plan XML, or a ZIP with the ready-to-import .mdb.",
+            },
+          ].map((step, index) => (
+            <div key={step.title} className="surface p-4">
+              <span className="flex h-7 w-7 items-center justify-center rounded-full bg-brand-500/10 text-xs font-semibold text-brand-600 dark:bg-brand-400/10 dark:text-brand-300">
+                {index + 1}
+              </span>
+              <h3 className="mt-3 text-sm font-semibold">{step.title}</h3>
+              <p className="mt-1 text-xs leading-relaxed text-slate-500 dark:text-slate-400">{step.body}</p>
+            </div>
+          ))}
+        </section>
       </div>
     </>
   );

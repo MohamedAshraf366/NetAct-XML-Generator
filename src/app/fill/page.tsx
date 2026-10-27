@@ -14,8 +14,8 @@ function Logo() {
 }
 
 export const metadata = {
-  title: "Fill NetAct dump · NetAct XML Generator",
-  description: "Fill an empty NetAct Access dump from a full RAML XML export.",
+  title: "Create NetAct dump · NetAct XML Generator",
+  description: "Create a ready-to-import NetAct Access dump from a full RAML XML export.",
 };
 
 export default function FillPage() {
@@ -33,12 +33,12 @@ export default function FillPage() {
             <Logo />
             <div className="min-w-0 leading-tight">
               <p className="truncate font-semibold tracking-tight">NetAct XML Generator</p>
-              <p className="truncate text-xs text-slate-500 dark:text-slate-400">RAML XML → filled Access dump</p>
+              <p className="truncate text-xs text-slate-500 dark:text-slate-400">RAML XML → ready Access dump</p>
             </div>
           </Link>
           <div className="flex shrink-0 items-center gap-2">
-            <Link href="/" className="btn-ghost !px-3 !py-1.5 text-xs">
-              Compare plans
+            <Link href="/create-xml" className="btn-ghost hidden !px-3 !py-1.5 text-xs sm:inline-flex">
+              Create XML
             </Link>
             <ThemeToggle />
           </div>
@@ -50,11 +50,17 @@ export default function FillPage() {
             Full export, streamed in the background
           </span>
           <h1 className="mt-4 font-semibold tracking-tight text-3xl sm:text-4xl md:text-5xl">
-            Turn the RAML export into a <span className="text-gradient">ready dump</span>.
+            Create a ready-to-import <span className="text-gradient">NetAct dump</span>.
           </h1>
           <p className="mt-4 text-base leading-relaxed text-slate-600 dark:text-slate-400">
-            Upload the full NetAct XML export and an empty Access dump. Every object, parameter and nested list is
-            written into the template tables, then returned as a ZIP with the filled <code>.mdb</code>.
+            Upload the full NetAct XML export and the empty template. Every object, parameter and nested list is
+            created in the template tables, then returned as a ZIP with the ready <code>.mdb</code>.
+          </p>
+          <p className="mt-3 text-sm text-slate-500 dark:text-slate-400">
+            Need a change plan instead?{" "}
+            <Link href="/create-xml" className="font-medium text-brand-600 hover:text-brand-500 dark:text-brand-300 dark:hover:text-brand-200">
+              Create XML
+            </Link>
           </p>
         </section>
 

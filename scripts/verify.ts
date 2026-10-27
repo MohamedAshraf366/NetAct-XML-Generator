@@ -21,7 +21,7 @@ import {
   paramsFor,
   type ParamDef,
 } from "../src/lib/config";
-import { buildChanges, dbParamNames, objectDistName, wantedDistNames } from "../src/lib/diff";
+import { buildChanges, dbParamNames, objectDistName, resolveTarget, wantedDistNames } from "../src/lib/diff";
 import { loadDb } from "../src/lib/db";
 import { canonicalize, readInput } from "../src/lib/input";
 import { writeRaml } from "../src/lib/xml";
@@ -33,17 +33,26 @@ let failed = 0;
 
 const ID_COLS = ["mrbtsId", "lnBtsId", "lnCelId", "lnRelId", "nrBtsId", "nrCellId"];
 
-async function check(name: string, selected: string[], label: string, db: Buffer, csv: Buffer, expected: string, allParams: Record<string, ParamDef>) {
+async function check(
+  name: string,
+  selected: string[],
+  label: string,
+  db: Buffer,
+  csv: Buffer,
+  expected: string,
+  allParams: Record<string, ParamDef>,
+  tdd: boolean,
+) {
   const parsed = await readInput(`${name}.csv`, csv);
   const { header, rows } = canonicalize(parsed.header, parsed.rows, [...ID_COLS, ...ALL_PARAM_NAMES]);
   const params = selected.filter((p) => header.includes(p));
   // Use the same parameter filter the app passes, so this also guards the fast XML-scan path.
   const loaded = await loadDb(
     [{ name: `${name}.test-db.xml`, data: db }],
-    wantedDistNames(rows, params, allParams),
+    wantedDistNames(rows, params, allParams, tdd),
     dbParamNames(params, allParams),
   );
-  const { changes, warnings } = buildChanges(rows, params, loaded.objects, allParams);
+  const { changes, warnings } = buildChanges(rows, params, loaded.objects, allParams, tdd);
   const planName = expected.match(/<cmData[^>]*\bname="([^"]*)"/)?.[1] ?? name;
   const out = writeRaml(changes, planName);
   const exact = stripTime(out) === stripTime(expected);
@@ -76,7 +85,7 @@ async function check(name: string, selected: string[], label: string, db: Buffer
     const parsed = await readInput(`${name}.csv`, csv);
     const { header, rows } = canonicalize(parsed.header, parsed.rows, [...ID_COLS, ...ALL_PARAM_NAMES]);
     const isNr = header.includes("nrCellId");
-    const tdd = header.includes("dlSectorBFWeightProfName");
+    const tdd = !isNr && (header.includes("dlSectorBFWeightProfName") || header.includes("mMimoSectorBFProfName"));
     const techParams = paramsFor(isNr ? "NR" : "LTE");
     const paramNames = paramNamesFor(isNr ? "NR" : "LTE");
     const defaults = isNr ? DEFAULT_NR_PARAM_NAMES : DEFAULT_PARAM_NAMES;
@@ -93,16 +102,16 @@ async function check(name: string, selected: string[], label: string, db: Buffer
       };
       const byDn = new Map<string, { cls: string; ps: string[] }>();
       for (const p of paramNames) {
-        const def = techParams[p];
+        const target = resolveTarget(techParams[p], tdd);
         if (!header.includes(p) || r[p] === "") continue;
-        const isTddParam = def.cls.endsWith("TDD"), isFddParam = def.cls.endsWith("FDD");
+        const isTddParam = target.cls.endsWith("TDD"), isFddParam = target.cls.endsWith("FDD");
         if ((isTddParam && !tdd) || (isFddParam && tdd)) continue; // a TDD cell has no LNCEL_FDD object and vice-versa
-        const dn = objectDistName(i, r, def);
+        const dn = objectDistName(i, r, target);
         if (!dn) continue;
         const differs = differ.has(`${dn}|${p}`);
         // alternate between "old value" and "parameter not set in DB" for differing TDD profile values
         const omit = differs && isTddParam && flip++ % 2 === 0;
-        const g = byDn.get(dn) ?? { cls: def.cls, ps: [] };
+        const g = byDn.get(dn) ?? { cls: target.cls, ps: [] };
         if (!omit) g.ps.push(`<p name="${p}">${differs ? "OLD" : r[p]}</p>`);
         byDn.set(dn, g);
       }
@@ -113,8 +122,8 @@ async function check(name: string, selected: string[], label: string, db: Buffer
     fs.writeFileSync(path.join(dir, `${name}.test-db.xml`), dbXml);
     const db = Buffer.from(dbXml);
 
-    const w = await check(name, defaults, "default parameters", db, csv, expected, techParams);
-    await check(name, paramNames, "all parameters", db, csv, expected, techParams);
+    const w = await check(name, defaults, "default parameters", db, csv, expected, techParams, tdd);
+    await check(name, paramNames, "all parameters", db, csv, expected, techParams, tdd);
     for (const x of w) console.log("   note:", x);
   }
   if (names.length) {

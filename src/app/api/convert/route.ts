@@ -99,6 +99,8 @@ export async function POST(req: Request) {
     // The technology decides which parameter -> class map applies (a few names, e.g. "angle",
     // exist in both LTE and NR but target different managed objects).
     const tech: Tech = header.includes("nrCellId") ? "NR" : "LTE";
+    // TDD exports use a different child object for dlRsBoost (LNCEL_TDD instead of LNCEL_FDD).
+    const tdd = tech === "LTE" && (header.includes("dlSectorBFWeightProfName") || header.includes("mMimoSectorBFProfName"));
     const activeParamDefs: Record<string, ParamDef> = { ...paramsFor(tech), ...customMappings };
     const allKnownParamNames = Object.keys(activeParamDefs);
 
@@ -154,7 +156,7 @@ export async function POST(req: Request) {
     let dbFilesRead = 0;
     let dbScanned = 0;
     if (sources.length > 0) {
-      const wanted = wantedDistNames(rows, params, activeParamDefs);
+      const wanted = wantedDistNames(rows, params, activeParamDefs, tdd);
       const db = await loadDb(sources, wanted, dbParamNames(params, activeParamDefs));
       if (db.filesRead === 0) return fail("No .xml or .mdb database files were found inside the database upload.");
       dbObjects = db.objects;
@@ -163,7 +165,7 @@ export async function POST(req: Request) {
     }
 
     // 3. compare + write
-    const { changes, warnings, unchanged } = buildChanges(rows, params, dbObjects, activeParamDefs);
+    const { changes, warnings, unchanged } = buildChanges(rows, params, dbObjects, activeParamDefs, tdd);
     if (!dbObjects) warnings.unshift("No database was provided - all planned values were written as updates.");
     const xml = writeRaml(changes, name);
 

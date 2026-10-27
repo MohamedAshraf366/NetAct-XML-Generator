@@ -233,7 +233,7 @@ function pump(): void {
       job.phase = "error";
       job.error = e instanceof Error ? e.message : String(e);
       job.finishedAt = Date.now();
-      console.error("fill job failed", job.id, e);
+      console.error("dump job failed", job.id, e);
       void cleanupJob(job, true);
     })
     .finally(() => {

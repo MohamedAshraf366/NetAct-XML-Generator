@@ -6,7 +6,7 @@
  *
  * Verified from the reference XMLs (700 / 1800 FDD and 2600 TDD):
  *   angle                      -> LNCEL
- *   dlRsBoost                  -> LNCEL_FDD-0
+ *   dlRsBoost                  -> LNCEL_FDD-0, or LNCEL_TDD-0 in a TDD export
  *   dlSectorBFWeightProfName   -> LNCEL_TDD-0
  *   mMimoSectorBFProfName      -> LNCEL_TDD-0
  *   phyCellId                  -> LNCEL                       (PCI jobs: pci700 / pci1800 / pci2600)
@@ -24,6 +24,9 @@ export type ParamDef = {
   idColumn?: string;
   /** Prefix for that id, e.g. "LNREL-" -> "…/LNCEL-1/LNREL-361". */
   idPrefix?: string;
+  /** TDD exports target a different child class for the same CSV column (e.g. dlRsBoost). */
+  tddCls?: string;
+  tddSuffix?: string;
   tech?: Tech;
   group?: string;
   dbColumn?: string;
@@ -33,7 +36,14 @@ const NRCELL_CLS = "com.nokia.srbts.nrbts:NRCELL";
 
 export const LTE_PARAMS: Record<string, ParamDef> = {
   angle: { cls: "NOKLTE:LNCEL", suffix: "", defaultOn: true, tech: "LTE" },
-  dlRsBoost: { cls: "NOKLTE:LNCEL_FDD", suffix: "/LNCEL_FDD-0", defaultOn: true, tech: "LTE" },
+  dlRsBoost: {
+    cls: "NOKLTE:LNCEL_FDD",
+    suffix: "/LNCEL_FDD-0",
+    tddCls: "NOKLTE:LNCEL_TDD",
+    tddSuffix: "/LNCEL_TDD-0",
+    defaultOn: true,
+    tech: "LTE",
+  },
   dlSectorBFWeightProfName: { cls: "NOKLTE:LNCEL_TDD", suffix: "/LNCEL_TDD-0", defaultOn: true, tech: "LTE" },
   mMimoSectorBFProfName: { cls: "NOKLTE:LNCEL_TDD", suffix: "/LNCEL_TDD-0", defaultOn: true, tech: "LTE" },
   phyCellId: { cls: "NOKLTE:LNCEL", suffix: "", defaultOn: true, tech: "LTE" },

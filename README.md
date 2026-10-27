@@ -8,6 +8,9 @@ database and writes **only the values that differ** to a NetAct "plan" XML (`<cm
 If you do **not** provide a database at all, the comparison is skipped and **every planned value** is written out as an
 update (same XML shape, using the default version).
 
+The landing page (`/`) offers two workflows: **Create XML** (`/create-xml`) for change plans and **Create dump**
+(`/fill`) for rebuilding a full Access dump from a RAML export.
+
 ## Run
 
 ```bash
@@ -51,19 +54,19 @@ localhost / intranet servers - blocked by default because the download is done b
 `ALLOW_LOCAL_FILES=true` (allow reading local paths such as `/var/dumps/db.rar`; **off by default**, and the Docker
 image sets it to `false`).
 
-## Fill an empty NetAct dump from a full export (`/fill`)
+## Create a NetAct dump from a full export (`/fill`)
 
-`/fill` builds a ready-to-import Access dump instead of a plan XML. Upload the full RAML XML export (`.xml`,
-`.xml.gz`, or a `.rar` containing it) and an empty template dump (`Dump 4G+5G.mdb`). The app writes every managed
-object, parameter and nested list into the template's `A_<class>` tables, using the template's own
-`IMPORT_CLASS_FILTER` / `IMPORT_PARAMETER_FILTER` / `IMPORT_LIST_MAPPING` rows, then returns a ZIP with the filled
+`/fill` creates a ready-to-import Access dump instead of a plan XML. Upload the full RAML XML export (`.xml`,
+`.xml.gz`, or a `.rar` containing it) and an empty template dump (`Dump 4G+5G.mdb`). The app creates every managed
+object, parameter and nested list in the template's `A_<class>` tables, using the template's own
+`IMPORT_CLASS_FILTER` / `IMPORT_PARAMETER_FILTER` / `IMPORT_LIST_MAPPING` rows, then returns a ZIP with the created
 `.mdb`. Classes or parameters that the template does not import (hardware inventory, activation counters, ...) are
 counted and skipped exactly like NetAct does.
 
-The job runs inside the Node process, one job at a time, in the background. Large uploads go through the same 8 MB
+The dump is created inside the Node process, one job at a time, in the background. Large uploads go through the same 8 MB
 chunked upload as the converter, so proxies never see a long request body. The XML is streamed into a Java helper
 that inserts rows with Jackcess; peak memory stays near the Java heap, independent of the XML size. A 3.3 GB export
-fills the 126 MB template into a ~1.3 GB dump in about 3–4 minutes on an 8-thread desktop. A direct `.xml` file is split into byte ranges and parsed by worker processes; `.xml.gz`/`.rar` uploads are first unpacked to a temporary XML (needing free disk equal to the unpacked size) and then use the same parallel path. Workers write in completion order, so when an export contains duplicate key rows the surviving row can differ from a single-stream fill; set `MDB_FILL_WORKERS=1` when that must be deterministic.
+creates a ~1.3 GB dump from the 126 MB template in about 3–4 minutes on an 8-thread desktop. A direct `.xml` file is split into byte ranges and parsed by worker processes; `.xml.gz`/`.rar` uploads are first unpacked to a temporary XML (needing free disk equal to the unpacked size) and then use the same parallel path. Workers write in completion order, so when an export contains duplicate key rows the surviving row can differ from a single-stream dump creation; set `MDB_FILL_WORKERS=1` when that must be deterministic.
 
 Requirements:
 
@@ -78,7 +81,7 @@ Requirements:
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
-| `MDB_FILL_JAVA` | auto-detect | Java executable used by the fill job |
+| `MDB_FILL_JAVA` | auto-detect | Java executable used by the dump writer |
 | `MDB_FILL_CLASSES` | `tools/mdb-fill/classes` | Compiled `MdbFill.class` directory |
 | `MDB_FILL_JAR` | `tools/mdb-fill/jackcess-5.0.4.jar` | Jackcess classpath |
 | `MDB_FILL_HEAP` | `-Xmx448m` | JVM heap for the writer (lower it to fit small hosts) |
@@ -89,16 +92,16 @@ Requirements:
 | `MAX_EXTRACT_MB` | `3072` | Member size cap for the buffered archive fallbacks |
 
 Finished jobs stay downloadable as ZIP for 12 hours (the intermediate `.mdb` is deleted right after zipping). Jobs are
-kept in memory: restarting the server cancels a running fill and removes its temp folder. ZIP uploads are rejected -
+kept in memory: restarting the server cancels running dump creation and removes its temp folder. ZIP uploads are rejected -
 upload the XML itself, an XML.gz, or a RAR.
 
-## Output rules (verified against the hand-made 700, 1800 and 2600 XMLs)
+## Output rules (verified against the reference plan XMLs)
 
 | CSV column | Class | distName |
 |------------|-------|----------|
 | `angle` | `NOKLTE:LNCEL` | `PLMN-PLMN/MRBTS-x/LNBTS-x/LNCEL-n` |
-| `dlRsBoost` | `NOKLTE:LNCEL_FDD` | `…/LNCEL-n/LNCEL_FDD-0` (FDD cells: 700, 1800) |
-| `dlSectorBFWeightProfName`, `mMimoSectorBFProfName` | `NOKLTE:LNCEL_TDD` | `…/LNCEL-n/LNCEL_TDD-0` (TDD cells: 2600) |
+| `dlRsBoost` | `NOKLTE:LNCEL_FDD`, or `NOKLTE:LNCEL_TDD` in TDD exports | `…/LNCEL-n/LNCEL_FDD-0` (FDD) or `…/LNCEL-n/LNCEL_TDD-0` (TDD) |
+| `dlSectorBFWeightProfName`, `mMimoSectorBFProfName` | `NOKLTE:LNCEL_TDD` | `…/LNCEL-n/LNCEL_TDD-0` |
 
 | `phyCellId` (PCI jobs) | `NOKLTE:LNCEL` | `PLMN-PLMN/MRBTS-x/LNBTS-x/LNCEL-n` |
 

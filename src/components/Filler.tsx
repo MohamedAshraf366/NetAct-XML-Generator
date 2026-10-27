@@ -106,7 +106,7 @@ export default function Filler() {
     try {
       const xmlRef = await upload(xml[0], xml[0].name, setProgress);
       const templateRef = await upload(template[0], template[0].name, setProgress);
-      setProgress("Starting the fill job…");
+      setProgress("Starting the dump job…");
       const fd = new FormData();
       fd.append("xmlRef", xmlRef);
       fd.append("templateRef", templateRef);
@@ -118,7 +118,7 @@ export default function Filler() {
       } catch {
         /* proxy error */
       }
-      if (!res.ok || !json.job) throw new Error(json.error ?? (text.trim().slice(0, 300) || "Could not start the fill job."));
+      if (!res.ok || !json.job) throw new Error(json.error ?? (text.trim().slice(0, 300) || "Could not start the dump job."));
       setJob(json.job);
       setProgress(null);
     } catch (e) {
@@ -139,7 +139,7 @@ export default function Filler() {
       : job?.phase === "prepare"
         ? "Preparing the template…"
         : job?.phase === "fill"
-          ? `Filling the database${pct !== null ? ` — ${pct}%` : "…"}`
+          ? `Creating the dump${pct !== null ? ` — ${pct}%` : "…"}`
           : job?.phase === "zip"
             ? "Packaging the ZIP…"
             : job?.phase === "done"
@@ -160,8 +160,8 @@ export default function Filler() {
             onChange={setXml}
           />
           <DropZone
-            label="2. Empty NetAct dump template"
-            hint="Dump 4G+5G.mdb / .accdb — the tables are filled in place"
+            label="2. NetAct dump template"
+            hint="Dump 4G+5G.mdb / .accdb — rows are created in place"
             accept=".mdb,.accdb"
             files={template}
             onChange={setTemplate}
@@ -171,15 +171,15 @@ export default function Filler() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <p className="text-xs text-slate-500 dark:text-slate-400">
             {xml.length > 0 && template.length > 0
-              ? `${sizeLabel(xml[0].size)} + ${sizeLabel(template[0].size)}. The export is streamed; the filled database is returned as a ZIP.`
-              : "Upload both files. Large exports are sent in chunks and filled in the background."}
+              ? `${sizeLabel(xml[0].size)} + ${sizeLabel(template[0].size)}. The export is streamed; the created dump is returned as a ZIP.`
+              : "Upload both files. Large exports are sent in chunks and the dump is created in the background."}
           </p>
           <button
             className="btn-primary"
             disabled={busy || active || xml.length === 0 || template.length === 0}
             onClick={run}
           >
-            {busy ? "Uploading…" : active ? "Job running…" : "Fill the dump"}
+            {busy ? "Uploading…" : active ? "Creating dump…" : "Create dump"}
           </button>
         </div>
 
@@ -215,8 +215,8 @@ export default function Filler() {
             {job.phase === "done" && job.result && (
               <div className="space-y-2 text-sm text-slate-700 dark:text-slate-300">
                 <p>
-                  Filled {fmt(job.result.rows)} rows from {fmt(job.result.objects)} objects in{" "}
-                  {duration(job.result.seconds)}. Database size {job.result.sizeMB} MB.
+                  Created {fmt(job.result.rows)} rows from {fmt(job.result.objects)} objects in{" "}
+                  {duration(job.result.seconds)}. Dump size {job.result.sizeMB} MB.
                   {job.result.exportTime ? ` Export time ${job.result.exportTime}.` : ""}
                 </p>
                 <p className={job.result.errors > 0 ? "text-amber-700 dark:text-amber-300" : "text-emerald-700 dark:text-emerald-300"}>

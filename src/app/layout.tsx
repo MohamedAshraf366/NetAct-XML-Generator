@@ -3,8 +3,8 @@ import Footer from "@/components/Footer";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "NetAct XML Generator — CSV → NetAct XML",
-  description: "Compare a CSV / Excel plan with the network database and export only the changed cells as NetAct RAML XML.",
+  title: "NetAct XML Generator · Create XML or dump",
+  description: "Create change-only NetAct RAML XML from CSV / Excel plans, or create a ready-to-import NetAct Access dump from a full XML export.",
 };
 
 const themeScript = `(function(){try{var s=localStorage.getItem("netact-xml-generator:theme");var t=s==="light"?"light":"dark";var r=document.documentElement;r.classList.toggle("dark",t==="dark");r.style.colorScheme=t;}catch(e){document.documentElement.classList.add("dark");}})();`;
