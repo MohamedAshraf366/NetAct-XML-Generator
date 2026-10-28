@@ -1,5 +1,7 @@
 # NetAct XML Generator — CSV / Excel → NetAct RAML XML
 
+<img width="1366" height="599" alt="image" src="https://github.com/user-attachments/assets/9c889248-a8b2-4e83-8a9c-6abff2708aaf" />
+
 Next.js (App Router) + TypeScript + Tailwind CSS.
 
 Upload a CSV/XLSX of planned cell values and the current network database. The app compares every value with the
